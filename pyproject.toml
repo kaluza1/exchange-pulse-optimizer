@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "exchange-pulse-optimizer"
+version = "0.1.0"
+description = "Pulse-count layout and routing optimizer for exchange-only encoded qubit circuits"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "matplotlib",
+    "networkx",
+    "ortools",
+    "qiskit",
+]
+
+[project.scripts]
+exchange-pulse-opt = "exchange_pulse_optimizer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
