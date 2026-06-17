@@ -5,7 +5,9 @@ from typing import Any
 
 from qiskit import QuantumCircuit
 
-from .optimizer import DEFAULT_PULSE_COSTS, EncodedTopology, PulsePlan, PulseStep
+from .costs import DEFAULT_PULSE_COSTS
+from .optimizer import PulsePlan, PulseStep
+from .topology import EncodedTopology
 
 try:
     from ortools.sat.python import cp_model
@@ -36,6 +38,7 @@ class CpSatPulseOptimizer:
         max_layers: int | None = None,
         time_limit_seconds: float | None = 30.0,
         makespan_weight: int = 1000,
+        initial_layout: dict[int, int] | None = None,
     ) -> None:
         if cp_model is None:
             raise ModuleNotFoundError("ortools is required for CP-SAT mode. Install with: py -m pip install ortools")
@@ -50,6 +53,7 @@ class CpSatPulseOptimizer:
         self._max_layers = max_layers
         self._time_limit_seconds = time_limit_seconds
         self._makespan_weight = makespan_weight
+        self._initial_layout = initial_layout
 
     def optimize(self, qc: QuantumCircuit) -> PulsePlan:
         if qc.num_qubits > self._encoded_topology.num_encoded_slots:
@@ -78,6 +82,12 @@ class CpSatPulseOptimizer:
             for g in gates
             for t in range(layers)
         }
+        cxswap_run = {
+            (g.index, t): model.NewBoolVar(f"cxswap_g{g.index}_t{t}")
+            for g in gates
+            if g.name in ("cx", "cxswap")
+            for t in range(layers)
+        }
         swp = {
             (e_idx, t): model.NewBoolVar(f"swap_e{e_idx}_t{t}")
             for e_idx in range(len(edges))
@@ -90,8 +100,22 @@ class CpSatPulseOptimizer:
             for s in range(len(slots)):
                 model.AddAtMostOne(occ[t, q, s] for q in qubits)
 
+        if self._initial_layout is not None:
+            for q in qubits:
+                if q not in self._initial_layout:
+                    raise ValueError(f"fixed initial layout is missing logical qubit {q}.")
+                slot = self._initial_layout[q]
+                if slot not in slot_index:
+                    raise ValueError(f"fixed initial layout uses unknown slot {slot} for logical qubit {q}.")
+                model.Add(occ[0, q, slot_index[slot]] == 1)
+
         for g in gates:
             model.AddExactlyOne(run[g.index, t] for t in range(layers))
+            for t in range(layers):
+                if g.name == "cx":
+                    model.Add(cxswap_run[g.index, t] <= run[g.index, t])
+                elif g.name == "cxswap":
+                    model.Add(cxswap_run[g.index, t] == run[g.index, t])
 
         gate_layer = {}
         for g in gates:
@@ -121,6 +145,31 @@ class CpSatPulseOptimizer:
                     move[(t, q, e_idx, a, b)] = ab
                     move[(t, q, e_idx, b, a)] = ba
 
+        adjacent_pair = self._adjacent_pair_vars(model, occ, gates, layers, len(slots), edges)
+        for g in gates:
+            if len(g.qubits) == 2:
+                for t in range(layers):
+                    model.Add(sum(adjacent_pair[g.index, t]) >= run[g.index, t])
+
+        cxswap_pair = self._cxswap_pair_vars(
+            model,
+            occ,
+            gates,
+            layers,
+            edges,
+            cxswap_run,
+        )
+        for g in gates:
+            if g.name in ("cx", "cxswap"):
+                for t in range(layers):
+                    model.Add(sum(cxswap_pair[g.index, t].values()) == cxswap_run[g.index, t])
+
+        logical_swap_pair = self._logical_swap_pair_vars(model, occ, gates, layers, edges, run)
+        for g in gates:
+            if g.name == "swap":
+                for t in range(layers):
+                    model.Add(sum(logical_swap_pair[g.index, t].values()) == run[g.index, t])
+
         for t in range(layers):
             for q in qubits:
                 for s in range(len(slots)):
@@ -133,13 +182,40 @@ class CpSatPulseOptimizer:
                         elif b == s:
                             outgoing.append(move[(t, q, e_idx, b, a)])
                             incoming.append(move[(t, q, e_idx, a, b)])
-                    model.Add(occ[t + 1, q, s] == occ[t, q, s] - sum(outgoing) + sum(incoming))
 
-        adjacent_pair = self._adjacent_pair_vars(model, occ, gates, layers, len(slots), edges)
-        for g in gates:
-            if len(g.qubits) == 2:
-                for t in range(layers):
-                    model.Add(sum(adjacent_pair[g.index, t]) >= run[g.index, t])
+                    for gate in gates:
+                        if gate.name not in ("cx", "cxswap"):
+                            continue
+                        qa, qb = gate.qubits
+                        for (src, dst), var in cxswap_pair[gate.index, t].items():
+                            if q == qa:
+                                if src == s:
+                                    outgoing.append(var)
+                                if dst == s:
+                                    incoming.append(var)
+                            elif q == qb:
+                                if dst == s:
+                                    outgoing.append(var)
+                                if src == s:
+                                    incoming.append(var)
+
+                    for gate in gates:
+                        if gate.name != "swap":
+                            continue
+                        qa, qb = gate.qubits
+                        for (src, dst), var in logical_swap_pair[gate.index, t].items():
+                            if q == qa:
+                                if src == s:
+                                    outgoing.append(var)
+                                if dst == s:
+                                    incoming.append(var)
+                            elif q == qb:
+                                if dst == s:
+                                    outgoing.append(var)
+                                if src == s:
+                                    incoming.append(var)
+
+                    model.Add(occ[t + 1, q, s] == occ[t, q, s] - sum(outgoing) + sum(incoming))
 
         for t in range(layers):
             for q in qubits:
@@ -156,6 +232,8 @@ class CpSatPulseOptimizer:
             duration = model.NewIntVar(0, max(self._pulse_costs.values()), f"duration_t{t}")
             for g in gates:
                 model.Add(duration >= g.cost).OnlyEnforceIf(run[g.index, t])
+                if g.name in ("cx", "cxswap"):
+                    model.Add(duration >= self._pulse_costs["cxswap"]).OnlyEnforceIf(cxswap_run[g.index, t])
             for e_idx in range(len(edges)):
                 model.Add(duration >= self._pulse_costs["swap"]).OnlyEnforceIf(swp[e_idx, t])
             layer_duration.append(duration)
@@ -180,6 +258,8 @@ class CpSatPulseOptimizer:
             slots,
             edges,
             layer_duration,
+            cxswap_run,
+            qubits,
             solver.StatusName(status),
         )
 
@@ -188,8 +268,6 @@ class CpSatPulseOptimizer:
         for index, inst in enumerate(qc.data):
             name = inst.operation.name
             qids = tuple(qc.find_bit(q).index for q in inst.qubits)
-            if name == "swap":
-                raise ValueError("CP-SAT mode does not yet support logical swap gates in the input circuit.")
             if name == "barrier":
                 continue
             cost = self._pulse_costs.get(name)
@@ -226,9 +304,57 @@ class CpSatPulseOptimizer:
                 adjacent_pair[gate.index, t] = vars_for_gate
         return adjacent_pair
 
-    def _build_plan(self, solver, occ, run, swp, gates, layers, slots, edges, layer_duration, status_name) -> PulsePlan:
-        initial_slot_layout = self._slot_layout_from_occ(solver, occ, 0, gates, slots)
-        final_slot_layout = self._slot_layout_from_occ(solver, occ, layers, gates, slots)
+    def _cxswap_pair_vars(self, model, occ, gates, layers, edges, cxswap_run):
+        cxswap_pair = {}
+        directed_edges = edges + [(b, a) for a, b in edges]
+        for gate in gates:
+            if gate.name not in ("cx", "cxswap"):
+                continue
+            qa, qb = gate.qubits
+            for t in range(layers):
+                pair_vars = {}
+                for a, b in directed_edges:
+                    var = model.NewBoolVar(f"cxswap_pair_g{gate.index}_t{t}_s{a}_{b}")
+                    model.AddBoolAnd([cxswap_run[gate.index, t], occ[t, qa, a], occ[t, qb, b]]).OnlyEnforceIf(var)
+                    model.AddBoolOr(
+                        [
+                            cxswap_run[gate.index, t].Not(),
+                            occ[t, qa, a].Not(),
+                            occ[t, qb, b].Not(),
+                            var,
+                        ]
+                    )
+                    pair_vars[(a, b)] = var
+                cxswap_pair[gate.index, t] = pair_vars
+        return cxswap_pair
+
+    def _logical_swap_pair_vars(self, model, occ, gates, layers, edges, run):
+        swap_pair = {}
+        directed_edges = edges + [(b, a) for a, b in edges]
+        for gate in gates:
+            if gate.name != "swap":
+                continue
+            qa, qb = gate.qubits
+            for t in range(layers):
+                pair_vars = {}
+                for a, b in directed_edges:
+                    var = model.NewBoolVar(f"logical_swap_pair_g{gate.index}_t{t}_s{a}_{b}")
+                    model.AddBoolAnd([run[gate.index, t], occ[t, qa, a], occ[t, qb, b]]).OnlyEnforceIf(var)
+                    model.AddBoolOr(
+                        [
+                            run[gate.index, t].Not(),
+                            occ[t, qa, a].Not(),
+                            occ[t, qb, b].Not(),
+                            var,
+                        ]
+                    )
+                    pair_vars[(a, b)] = var
+                swap_pair[gate.index, t] = pair_vars
+        return swap_pair
+
+    def _build_plan(self, solver, occ, run, swp, gates, layers, slots, edges, layer_duration, cxswap_run, qubits, status_name) -> PulsePlan:
+        initial_slot_layout = self._slot_layout_from_occ(solver, occ, 0, qubits, slots)
+        final_slot_layout = self._slot_layout_from_occ(solver, occ, layers, qubits, slots)
         steps: list[PulseStep] = []
         pulse_count = 0
         used_layers = [t for t in range(layers) if solver.Value(layer_duration[t]) > 0]
@@ -239,9 +365,12 @@ class CpSatPulseOptimizer:
                 continue
             for gate in gates:
                 if solver.Value(run[gate.index, t]):
+                    is_cxswap = gate.name in ("cx", "cxswap") and solver.Value(cxswap_run[gate.index, t])
+                    step_name = "cxswap" if is_cxswap else gate.name
+                    step_cost = self._pulse_costs["cxswap"] if is_cxswap else gate.cost
                     dot_groups = tuple(self._dots_for_qubit_at(solver, occ, t, q, slots) for q in gate.qubits)
-                    steps.append(PulseStep(gate.name, gate.qubits, dot_groups, gate.cost, compact_layer[t]))
-                    pulse_count += gate.cost
+                    steps.append(PulseStep(step_name, gate.qubits, dot_groups, step_cost, compact_layer[t]))
+                    pulse_count += step_cost
             for e_idx, (a, b) in enumerate(edges):
                 if solver.Value(swp[e_idx, t]):
                     involved = []
@@ -261,10 +390,7 @@ class CpSatPulseOptimizer:
             schedule_duration=sum(solver.Value(duration) for duration in layer_duration),
         )
 
-    def _slot_layout_from_occ(self, solver, occ, t, gates, slots) -> dict[int, int]:
-        qubits = sorted({q for gate in gates for q in gate.qubits})
-        if not qubits and gates:
-            qubits = list(range(max(max(g.qubits, default=-1) for g in gates) + 1))
+    def _slot_layout_from_occ(self, solver, occ, t, qubits, slots) -> dict[int, int]:
         layout = {}
         for q in qubits:
             for s, slot in enumerate(slots):
@@ -280,4 +406,4 @@ class CpSatPulseOptimizer:
         raise ValueError("internal CP-SAT decode error.")
 
     def _public_layout(self, layout: dict[int, int]) -> dict[int, tuple[Any, ...]]:
-        return {qubit: self._encoded_topology.dot_groups[slot] for qubit, slot in layout.items()}
+        return {qubit: self._encoded_topology.dot_groups[layout[qubit]] for qubit in sorted(layout)}

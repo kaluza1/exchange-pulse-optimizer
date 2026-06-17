@@ -2,33 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from itertools import permutations
-import json
 from math import inf
-from pathlib import Path
 from typing import Any
 
 import networkx as nx
 from qiskit import QuantumCircuit
 
-
-DEFAULT_PULSE_COSTS = {
-    "cx": 28,
-    "cz": 28,
-    "swap": 15,
-    "h": 3,
-    "x": 3,
-    "y": 3,
-    "z": 1,
-    "s": 1,
-    "sdg": 1,
-    "t": 1,
-    "tdg": 1,
-    "rx": 3,
-    "ry": 3,
-    "rz": 1,
-    "measure": 0,
-    "barrier": 0,
-}
+from .costs import DEFAULT_PULSE_COSTS
+from .layout import interaction_weighted_layout
+from .topology import EncodedTopology
 
 
 @dataclass(frozen=True)
@@ -50,79 +32,6 @@ class PulsePlan:
     schedule_duration: int | None = None
 
 
-@dataclass(frozen=True)
-class EncodedTopology:
-    physical_graph: nx.Graph
-    dot_groups: tuple[tuple[Any, Any, Any], ...]
-
-    @property
-    def num_encoded_slots(self) -> int:
-        return len(self.dot_groups)
-
-    def to_slot_graph(self) -> nx.Graph:
-        slot_graph = nx.Graph()
-        for slot, dots in enumerate(self.dot_groups):
-            slot_graph.add_node(slot, dots=dots)
-
-        for left in range(len(self.dot_groups)):
-            for right in range(left + 1, len(self.dot_groups)):
-                if self._groups_touch(self.dot_groups[left], self.dot_groups[right]):
-                    slot_graph.add_edge(left, right)
-
-        return slot_graph
-
-    def _groups_touch(self, left: tuple[Any, ...], right: tuple[Any, ...]) -> bool:
-        return any(self.physical_graph.has_edge(a, b) for a in left for b in right)
-
-
-def read_openqasm(path: str | Path) -> QuantumCircuit:
-    return QuantumCircuit.from_qasm_file(str(path))
-
-
-def read_topology_json(path: str | Path) -> EncodedTopology:
-    with Path(path).open(encoding="utf-8") as f:
-        data = json.load(f)
-
-    graph = nx.Graph()
-    for node in data.get("nodes", []):
-        if isinstance(node, dict):
-            node_id = node["id"]
-            attrs = {key: value for key, value in node.items() if key != "id"}
-            graph.add_node(node_id, **attrs)
-        else:
-            graph.add_node(node)
-
-    for edge in data["edges"]:
-        if len(edge) == 2:
-            graph.add_edge(edge[0], edge[1])
-        elif len(edge) == 3:
-            graph.add_edge(edge[0], edge[1], **edge[2])
-        else:
-            raise ValueError(f"invalid edge entry: {edge}")
-
-    if "encoded_qubits" not in data:
-        raise ValueError("topology JSON must define encoded_qubits, e.g. [[0, 1, 2], [3, 4, 5]].")
-
-    dot_groups = []
-    used_dots = set()
-    for index, group in enumerate(data["encoded_qubits"]):
-        if len(group) != 3:
-            raise ValueError(f"encoded_qubits[{index}] must contain exactly 3 physical dots.")
-        missing = [dot for dot in group if dot not in graph]
-        if missing:
-            raise ValueError(f"encoded_qubits[{index}] contains dots that are not topology nodes: {missing}")
-        overlap = [dot for dot in group if dot in used_dots]
-        if overlap:
-            raise ValueError(f"physical dots cannot appear in multiple encoded groups: {overlap}")
-        if not nx.is_connected(graph.subgraph(group)):
-            raise ValueError(f"encoded_qubits[{index}] must be connected inside the physical topology.")
-
-        dot_groups.append(tuple(group))
-        used_dots.update(group)
-
-    return EncodedTopology(graph, tuple(dot_groups))
-
-
 class PulseCountOptimizer:
     """
     Initial-layout and encoded-SWAP router for exchange-only pulse count.
@@ -137,6 +46,9 @@ class PulseCountOptimizer:
         topology: EncodedTopology,
         pulse_costs: dict[str, int] | None = None,
         max_layouts: int = 40320,
+        layout_strategy: str = "exhaustive",
+        layout_decay: float = 0.98,
+        layout_local_search_rounds: int = 2,
     ) -> None:
         if topology.physical_graph.number_of_nodes() == 0:
             raise ValueError("physical topology must have at least one dot.")
@@ -150,6 +62,9 @@ class PulseCountOptimizer:
 
         self._pulse_costs = DEFAULT_PULSE_COSTS | (pulse_costs or {})
         self._max_layouts = max_layouts
+        self._layout_strategy = layout_strategy
+        self._layout_decay = layout_decay
+        self._layout_local_search_rounds = layout_local_search_rounds
 
     def optimize(self, qc: QuantumCircuit) -> PulsePlan:
         if qc.num_qubits > self._encoded_topology.num_encoded_slots:
@@ -166,6 +81,16 @@ class PulseCountOptimizer:
         return self._route(qc, layout, record_steps=True)
 
     def _find_initial_layout(self, qc: QuantumCircuit) -> dict[int, int]:
+        if self._layout_strategy == "interaction":
+            return interaction_weighted_layout(
+                qc,
+                self._topology,
+                decay=self._layout_decay,
+                local_search_rounds=self._layout_local_search_rounds,
+            )
+        if self._layout_strategy != "exhaustive":
+            raise ValueError(f"unsupported layout strategy: {self._layout_strategy}")
+
         nodes = list(self._topology.nodes)
         logical_qubits = list(range(qc.num_qubits))
 
@@ -218,6 +143,8 @@ class PulseCountOptimizer:
 
             if name == "swap":
                 pulse_count += self._apply_encoded_swap(a, b, layout, occupant, steps, record_steps)
+            elif name == "cxswap":
+                pulse_count += self._apply_cxswap(a, b, cost, layout, occupant, steps, record_steps)
             else:
                 pulse_count += cost
                 if record_steps:
@@ -232,7 +159,7 @@ class PulseCountOptimizer:
         )
 
     def _public_layout(self, layout: dict[int, int]) -> dict[int, tuple[Any, ...]]:
-        return {qubit: self._slot_dots(slot) for qubit, slot in layout.items()}
+        return {qubit: self._slot_dots(layout[qubit]) for qubit in sorted(layout)}
 
     def _slot_dots(self, slot: int) -> tuple[Any, ...]:
         return self._encoded_topology.dot_groups[slot]
@@ -289,6 +216,28 @@ class PulseCountOptimizer:
         cost = self._pulse_costs["swap"]
         if record_steps:
             steps.append(PulseStep("encoded_swap", (a, b), (self._slot_dots(slot_a), self._slot_dots(slot_b)), cost, len(steps)))
+        return cost
+
+    def _apply_cxswap(
+        self,
+        a: int,
+        b: int,
+        cost: int,
+        layout: dict[int, Any],
+        occupant: dict[Any, int | None],
+        steps: list[PulseStep],
+        record_steps: bool,
+    ) -> int:
+        slot_a = layout[a]
+        slot_b = layout[b]
+        if not self._topology.has_edge(slot_a, slot_b):
+            raise ValueError(f"cannot apply cxswap between non-adjacent slots: {slot_a}, {slot_b}")
+
+        if record_steps:
+            steps.append(PulseStep("cxswap", (a, b), (self._slot_dots(slot_a), self._slot_dots(slot_b)), cost, len(steps)))
+
+        layout[a], layout[b] = slot_b, slot_a
+        occupant[slot_a], occupant[slot_b] = b, a
         return cost
 
     def _move_to_empty_slot(
