@@ -3,13 +3,17 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import time
 
+from .costs import DEFAULT_GATE_FIDELITIES, ONE_QUBIT_GATES
 from .cpsat_optimizer import CpSatPulseOptimizer
+from .large_heuristic import LargeHeuristicOptimizer
 from .layout import interaction_weighted_layout
 from .optimizer import PulseCountOptimizer
 from .plotting import plot_topology
 from .qasm import read_openqasm, transpile_to_supported_gates
 from .topology import read_topology_json
+from .windowed_cpsat import WindowedCpSatOptimizer
 
 
 def main() -> None:
@@ -22,6 +26,11 @@ def main() -> None:
     parser.add_argument("--cxswap-cost", type=int, default=31)
     parser.add_argument("--cz-cost", type=int, default=26)
     parser.add_argument("--swap-cost", type=int, default=15)
+    parser.add_argument("--cx-fidelity", type=float, default=DEFAULT_GATE_FIDELITIES["cx"])
+    parser.add_argument("--cxswap-fidelity", type=float, default=DEFAULT_GATE_FIDELITIES["cxswap"])
+    parser.add_argument("--cz-fidelity", type=float, default=DEFAULT_GATE_FIDELITIES["cz"])
+    parser.add_argument("--swap-fidelity", type=float, default=DEFAULT_GATE_FIDELITIES["swap"])
+    parser.add_argument("--oneq-fidelity", type=float, default=DEFAULT_GATE_FIDELITIES["h"])
     parser.add_argument("--max-layouts", type=int, default=40320)
     parser.add_argument(
         "--layout-strategy",
@@ -41,9 +50,21 @@ def main() -> None:
         default=2,
         help="Number of pair-swap local-search rounds for interaction layout.",
     )
-    parser.add_argument("--solver", choices=("heuristic", "cp-sat"), default="heuristic")
+    parser.add_argument("--solver", choices=("heuristic", "large-heuristic", "cp-sat", "window-cp-sat"), default="heuristic")
     parser.add_argument("--sat-layers", type=int, default=None, help="Maximum macro layers for CP-SAT mode")
     parser.add_argument("--time-limit", type=float, default=30.0, help="CP-SAT time limit in seconds")
+    parser.add_argument("--cp-sat-workers", type=int, default=None, help="Number of OR-Tools CP-SAT search workers. Defaults to OR-Tools automatic setting.")
+    parser.add_argument("--makespan-weight", type=int, default=1000, help="CP-SAT objective weight for schedule_duration. Use 0 to disable.")
+    parser.add_argument("--swap-weight", type=int, default=10, help="CP-SAT objective weight for inserted encoded_swap count. Use 0 to disable.")
+    parser.add_argument("--error-weight", type=int, default=1, help="CP-SAT objective weight for total_error_cost. Use 0 to disable.")
+    parser.add_argument("--error-scale", type=int, default=1_000_000, help="Scale used for integer -log(fidelity) error costs.")
+    parser.add_argument("--window-size", type=int, default=20, help="Number of circuit operations per window-cp-sat subproblem.")
+    parser.add_argument("--window-sat-layers", type=int, default=None, help="Maximum macro layers per window-cp-sat subproblem.")
+    parser.add_argument("--large-front-layer-size", type=int, default=24, help="Number of ready 2Q gates considered by large-heuristic.")
+    parser.add_argument("--large-lookahead-gates", type=int, default=32, help="Number of future 2Q gates scored by large-heuristic.")
+    parser.add_argument("--large-path-candidates", type=int, default=3, help="Number of shortest path candidates used by large-heuristic.")
+    parser.add_argument("--large-layout-local-search-rounds", type=int, default=0, help="Pair-swap local-search rounds for large-heuristic initial layout.")
+    parser.add_argument("--no-large-cxswap", action="store_true", help="Disable automatic CXSWAP selection in large-heuristic mode.")
     parser.add_argument("--plot-topology", help="Save a PNG/SVG/PDF image of the physical dot graph")
     parser.add_argument("--no-encoded-edges", action="store_true", help="Do not draw dashed encoded-slot adjacency edges")
     parser.add_argument(
@@ -78,6 +99,13 @@ def main() -> None:
         "cz": args.cz_cost,
         "swap": args.swap_cost,
     }
+    gate_fidelities = {
+        "cx": args.cx_fidelity,
+        "cxswap": args.cxswap_fidelity,
+        "cz": args.cz_fidelity,
+        "swap": args.swap_fidelity,
+        **{gate: args.oneq_fidelity for gate in ONE_QUBIT_GATES},
+    }
     if args.solver == "cp-sat":
         fixed_initial_layout = None
         if args.layout_strategy == "interaction":
@@ -90,20 +118,60 @@ def main() -> None:
         optimizer = CpSatPulseOptimizer(
             topology,
             pulse_costs=pulse_costs,
+            gate_fidelities=gate_fidelities,
             max_layers=args.sat_layers,
             time_limit_seconds=args.time_limit,
+            makespan_weight=args.makespan_weight,
+            swap_weight=args.swap_weight,
+            error_weight=args.error_weight,
+            error_scale=args.error_scale,
             initial_layout=fixed_initial_layout,
+            num_search_workers=args.cp_sat_workers,
+        )
+    elif args.solver == "window-cp-sat":
+        optimizer = WindowedCpSatOptimizer(
+            topology,
+            pulse_costs=pulse_costs,
+            gate_fidelities=gate_fidelities,
+            error_scale=args.error_scale,
+            window_size=args.window_size,
+            window_layers=args.window_sat_layers,
+            time_limit_seconds=args.time_limit,
+            makespan_weight=args.makespan_weight,
+            swap_weight=args.swap_weight,
+            error_weight=args.error_weight,
+            layout_decay=args.layout_decay,
+            layout_local_search_rounds=args.layout_local_search_rounds,
+            num_search_workers=args.cp_sat_workers,
+        )
+    elif args.solver == "large-heuristic":
+        optimizer = LargeHeuristicOptimizer(
+            topology,
+            pulse_costs=pulse_costs,
+            gate_fidelities=gate_fidelities,
+            error_scale=args.error_scale,
+            layout_decay=args.layout_decay,
+            layout_local_search_rounds=args.large_layout_local_search_rounds,
+            front_layer_size=args.large_front_layer_size,
+            lookahead_gates=args.large_lookahead_gates,
+            path_candidates=args.large_path_candidates,
+            use_cxswap=not args.no_large_cxswap,
         )
     else:
         optimizer = PulseCountOptimizer(
             topology,
             pulse_costs=pulse_costs,
+            gate_fidelities=gate_fidelities,
+            error_scale=args.error_scale,
             max_layouts=args.max_layouts,
             layout_strategy=args.layout_strategy,
             layout_decay=args.layout_decay,
             layout_local_search_rounds=args.layout_local_search_rounds,
         )
+    start_time = time.perf_counter()
     plan = optimizer.optimize(qc)
+    plan.elapsed_seconds = time.perf_counter() - start_time
+    sorted_steps = _steps_sorted_by_layer(plan.steps)
 
     if args.json:
         output = json.dumps(
@@ -112,6 +180,9 @@ def main() -> None:
                 "final_layout": plan.final_layout,
                 "pulse_count": plan.pulse_count,
                 "schedule_duration": plan.schedule_duration,
+                "estimated_fidelity": plan.estimated_fidelity,
+                "total_error_cost": plan.total_error_cost,
+                "elapsed_seconds": plan.elapsed_seconds,
                 "solver_status": plan.solver_status,
                 "steps": [
                     {
@@ -121,7 +192,7 @@ def main() -> None:
                         "pulse_count": step.pulse_count,
                         "layer": step.layer,
                     }
-                    for step in plan.steps
+                    for step in sorted_steps
                 ],
             },
             indent=2,
@@ -131,7 +202,7 @@ def main() -> None:
         return
 
     lines = ["== initial layout ==", str(plan.initial_layout), "== pulse plan =="]
-    for index, step in enumerate(plan.steps):
+    for index, step in enumerate(sorted_steps):
         lines.append(
             f"{index:02d}: layer={step.layer!s:>3s} {step.name:12s} "
             f"logical={step.logical_qubits} "
@@ -142,6 +213,12 @@ def main() -> None:
     lines.append(f"total_pulses = {plan.pulse_count}")
     if plan.schedule_duration is not None:
         lines.append(f"schedule_duration = {plan.schedule_duration}")
+    if plan.estimated_fidelity is not None:
+        lines.append(f"estimated_fidelity = {plan.estimated_fidelity:.8g}")
+    if plan.total_error_cost is not None:
+        lines.append(f"total_error_cost = {plan.total_error_cost}")
+    if plan.elapsed_seconds is not None:
+        lines.append(f"elapsed_seconds = {plan.elapsed_seconds:.3f}")
     lines.append(f"final_layout = {plan.final_layout}")
     if plan.solver_status is not None:
         lines.append(f"solver_status = {plan.solver_status}")
@@ -162,5 +239,22 @@ def _write_output_file(output_dir: str | None, qasm_path: str, text: str, suffix
     print(f"saved_output = {output_path}")
 
 
+def _steps_sorted_by_layer(steps: list) -> list:
+    indexed_steps = list(enumerate(steps))
+    return [
+        step
+        for _index, step in sorted(
+            indexed_steps,
+            key=lambda item: (
+                item[1].layer is None,
+                item[1].layer if item[1].layer is not None else 0,
+                item[0],
+            ),
+        )
+    ]
+
+
 if __name__ == "__main__":
     main()
+
+

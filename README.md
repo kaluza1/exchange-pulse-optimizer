@@ -1,4 +1,4 @@
-# Exchange Pulse Optimizer
+﻿# Exchange Pulse Optimizer
 
 [Japanese README](README_ja.md)
 
@@ -30,9 +30,9 @@ The encoded-qubit adjacency graph must be either a 1D line or a 2D square-lattic
 
 For every adjacent pair of encoded groups, only endpoint-to-endpoint interfaces are allowed. For groups `A=(a0,a1,a2)` and `B=(b0,b1,b2)`, the only valid inter-group physical edges are `a2-b0` or `b2-a0`. This represents linear six-dot interfaces such as `a0-a1-a2-b0-b1-b2` or `b0-b1-b2-a0-a1-a2`. Middle-dot interfaces and multiple inter-group edges are rejected.
 
-## Cost Model
+## Macro Pulse Count Model
 
-The default macro pulse costs are:
+These values are approximate **pulse counts** for each macro operation. They are not direct error rates or fidelities.
 
 ```text
 cx     : 28
@@ -44,7 +44,46 @@ rz/z   : 1
 measure : 0
 ```
 
-The `cx=28`, `cxswap=31`, `cz=26`, and `swap=15` defaults are macro-level approximations. The two-qubit costs are based on the exchange-only pulse-sequence results discussed in Chadwick et al., "Short two-qubit pulse sequences for exchange-only spin qubits in 2D layouts" (arXiv:2412.14918). They can be changed from the CLI.
+The `cx=28`, `cxswap=31`, `cz=26`, and `swap=15` defaults are macro-level pulse-count approximations. The two-qubit pulse counts are based on the exchange-only pulse-sequence results discussed in Chadwick et al., "Short two-qubit pulse sequences for exchange-only spin qubits in 2D layouts" (arXiv:2412.14918). They can be changed from the CLI.
+
+## Fidelity/Error Model
+
+The optimizer also reports an estimated circuit fidelity by multiplying per-operation fidelities in the emitted pulse plan.
+
+```text
+estimated_fidelity = product_i F(operation_i)
+```
+
+For example, if the output plan contains `h`, `cx`, `encoded_swap`, and `cz`, the estimate is `F(h) * F(cx) * F(swap) * F(cz)`. `encoded_swap` uses the `swap` fidelity. The default macro-operation fidelities are:
+
+```text
+1q gates : 0.9986
+cx       : 0.9755
+cz       : 0.9589
+cxswap   : 0.9738
+swap     : 0.9903
+```
+
+The one-qubit value uses the average logical one-qubit Clifford fidelity from Broz et al., "Demonstration of an always-on exchange-only spin qubit," Nature Communications 17, 4794 (2026). For this experimental tool, non-Clifford one-qubit gates such as `t`, `tdg`, `rx`, `ry`, and `rz` are assigned the same one-qubit fidelity.
+
+The two-qubit values are set as follows:
+
+```text
+cx error     = 1 - 0.9755 = 0.0245
+swap error   = 1 - 0.9903 = 0.0097
+cz error     = 0.0245 * (0.062 / 0.037) ~= 0.0411
+cxswap error = 0.0245 * 1.07 ~= 0.0262
+```
+
+`cz` is a linear estimate using the LCCZ/CNOT error ratio from Weinstein et al. (Nature, 2023). `cxswap` uses the approximation that CXSWAP has 1.07 times the CX error, based on the average pulse-length overhead reported by Chadwick et al., Physical Review A 111, 052616 (2025). Routing `encoded_swap` operations use the `swap` fidelity.
+
+For CP-SAT, the corresponding integer `total_error_cost` is included in the objective by default:
+
+```text
+total_error_cost = sum_i round(error_scale * -log(F(operation_i)))
+```
+
+The reported `estimated_fidelity` is still the product of operation fidelities.
 
 ## Qiskit Input Decomposition
 
@@ -81,7 +120,9 @@ src/exchange_pulse_optimizer/
   topology.py         # Encoded topology model and JSON validation
   layout.py           # Initial-layout heuristic
   optimizer.py        # Heuristic routing optimizer and pulse-plan types
+  large_heuristic.py  # Front-layer/lookahead router for larger circuits
   cpsat_optimizer.py  # CP-SAT routing, scheduling, cxswap, and swap support
+  windowed_cpsat.py # Windowed routing CP-SAT
   cli.py              # Command-line interface
   plotting.py         # Topology plotting
 ```
@@ -155,6 +196,43 @@ exchange-pulse-opt examples\sample_4x4_interaction_20q.qasm examples\grid4x4_top
 
 The sample output is saved in `output/sample_4x4_interaction_20q_output.txt`.
 
+Run the windowed routing CP-SAT mode:
+
+```powershell
+exchange-pulse-opt examples\sample_4x4_interaction_20q.qasm examples\grid4x4_topology.json --solver window-cp-sat --window-size 8 --window-sat-layers 20 --time-limit 60 --output-dir output
+```
+
+`window-cp-sat` fixes an interaction-weighted initial layout, splits the circuit into small windows, and solves each window with the existing routing CP-SAT objective.
+
+Run the larger front-layer heuristic:
+
+```powershell
+exchange-pulse-opt examples\sample_500q_500g_random.qasm examples\line500_topology.json --solver large-heuristic --output-dir output
+```
+
+This mode is intended for larger benchmark circuits where CP-SAT is too heavy. It reports `elapsed_seconds` in the same output format as the other solvers.
+
+Run a 7x7 square-grid example with 49 logical qubits and 50 two-qubit gates:
+
+```powershell
+exchange-pulse-opt examples\sample_49q_50x2q_scattered_gridlocal.qasm examples\grid7x7_topology.json --solver window-cp-sat --window-size 2 --window-sat-layers 4 --time-limit 60 --cp-sat-workers 1 --output-dir output --no-qiskit-transpile
+```
+
+In this example, every window is solved with `OPTIMAL` status, and the output is saved to
+`output/sample_49q_50x2q_scattered_gridlocal_output.txt`.
+In one local run, `total_pulses = 1701`, `schedule_duration = 1506`,
+and `estimated_fidelity = 0.15001536`.
+
+Run a 30x30 square-grid benchmark with 900 logical qubits and 1000 fully random two-qubit gates:
+
+```powershell
+exchange-pulse-opt examples\sample_900q_1000x2q_random.qasm examples\grid30x30_topology.json --solver large-heuristic --output-dir output --no-qiskit-transpile
+```
+
+The output is saved to `output/sample_900q_1000x2q_random_output.txt`.
+In one local run, `total_pulses = 125502`, `schedule_duration = 1752`,
+`estimated_fidelity = 3.0630504e-43`, and `elapsed_seconds = 1679.932`.
+
 Save a 3x3 topology figure:
 
 ```powershell
@@ -176,10 +254,12 @@ topology
 Execution mode:
 
 ```text
---solver heuristic|cp-sat
+--solver heuristic|large-heuristic|cp-sat|window-cp-sat
   Selects the optimizer.
-  heuristic: sequential routing heuristic.
-  cp-sat   : CP-SAT optimization for routing, layers, and parallel execution.
+  heuristic       : sequential shortest-path routing heuristic.
+  large-heuristic : front-layer/lookahead routing with greedy parallel scheduling.
+  cp-sat          : CP-SAT optimization for routing, layers, and parallel execution.
+  window-cp-sat   : Fixed initial layout plus windowed routing CP-SAT.
   Default: heuristic
 
 --layout-strategy exhaustive|interaction
@@ -198,8 +278,56 @@ CP-SAT options:
   If too small, the solver may find no feasible solution.
 
 --time-limit SEC
-  Time limit for the routing CP-SAT model.
+  Time limit for the routing CP-SAT model. In `window-cp-sat`, this applies per window.
   Default: 30
+
+--cp-sat-workers N
+  Number of OR-Tools CP-SAT search workers. Use this to choose how many CPU cores the solver may use.
+  If omitted, OR-Tools uses its automatic setting.
+
+--window-size N
+  Number of circuit operations per `window-cp-sat` subproblem. Default: 20
+
+--window-sat-layers N
+  Maximum macro layers per `window-cp-sat` subproblem. If omitted, a window-local estimate is used.
+
+--makespan-weight N
+  Objective weight for schedule_duration. Default: 1000
+  Use 0 to remove schedule_duration from the objective.
+
+--swap-weight N
+  Objective weight for inserted encoded_swap count. Default: 10
+  Use 0 to remove encoded_swap count from the objective.
+
+--error-weight N
+  Objective weight for total_error_cost. Default: 1
+  Use 0 to remove total_error_cost from the objective.
+
+--error-scale N
+  Integer scale for -log(fidelity) error costs. Default: 1000000
+```
+
+Large-heuristic options:
+
+```text
+--large-front-layer-size N
+  Number of ready two-qubit gates considered at each routing step.
+  Default: 24
+
+--large-lookahead-gates N
+  Number of future two-qubit gates used when scoring swap/cxswap candidates.
+  Default: 32
+
+--large-path-candidates N
+  Number of shortest path candidates considered between a two-qubit pair.
+  Default: 3
+
+--large-layout-local-search-rounds N
+  Pair-swap local-search rounds for the large-heuristic initial layout.
+  Default: 0, to keep preprocessing fast for hundreds of qubits.
+
+--no-large-cxswap
+  Disables automatic CXSWAP selection for input CX gates.
 ```
 
 Initial-layout heuristic options:
@@ -251,6 +379,25 @@ Macro pulse costs:
   Macro pulse cost for encoded swap / input swap. Default: 15
 ```
 
+Gate fidelity estimates:
+
+```text
+--oneq-fidelity F
+  Fidelity used for supported one-qubit gates. Default: 0.9986
+
+--cx-fidelity F
+  Fidelity used for cx. Default: 0.9755
+
+--cxswap-fidelity F
+  Fidelity used for cxswap. Default: 0.9738
+
+--cz-fidelity F
+  Fidelity used for cz. Default: 0.9589
+
+--swap-fidelity F
+  Fidelity used for encoded swap / input swap. Default: 0.9903
+```
+
 Output and plotting:
 
 ```text
@@ -275,6 +422,28 @@ CP-SAT mode searches for an exact solution within the given `--sat-layers` horiz
 
 `total_pulses` is the sum of all macro-operation pulse counts. `schedule_duration` is the estimated time after parallel execution: for each layer, it takes the maximum pulse count in that layer, then sums over layers.
 
+The CP-SAT routing objective is:
+
+```text
+minimize
+  makespan_weight * schedule_duration
++ swap_weight * encoded_swap_count
++ error_weight * total_error_cost
+```
+
+Defaults:
+
+```text
+makespan_weight = 1000
+swap_weight     = 10
+error_weight    = 1
+error_scale     = 1000000
+```
+
+`error_scale` converts the floating-point `-log(F(operation_i))` values into integer costs for CP-SAT. With `error_scale = 1000000`, each `-log(F)` value is multiplied by 1000000 and rounded before it is added to `total_error_cost`.
+
+Setting any objective weight to `0` removes that cost from the objective.
+
 The current CP-SAT mode is a test implementation. Depending on `--layout-strategy`, the initial layout is either optimized inside the same CP-SAT model or fixed by a heuristic before the routing CP-SAT model runs.
 
 With `--solver cp-sat` and the default `--layout-strategy exhaustive`, one CP-SAT model jointly optimizes:
@@ -291,9 +460,11 @@ This can produce strong solutions for small circuits, but the search space grows
 
 OpenQASM logical `swap` gates are supported in CP-SAT mode. An input `swap` is treated as a required circuit gate and swaps the two logical qubit locations when it runs. Routing `encoded_swap` operations are separate from input `swap` gates and are inserted by the solver when needed. CP-SAT can also choose `cxswap` instead of `cx` for an input `cx` gate when the extra logical-location swap improves the route. An explicit input `cxswap` gate is supported as a macro operation that applies a CX-like gate and swaps the two logical qubit locations.
 
+For ordering constraints, `cz` gates commute with other `cz` gates. CP-SAT may reorder CZ-CZ pairs even when they share a logical qubit, although shared-qubit operations still cannot run in the same layer.
+
 ## Layout And Routing Modes
 
-There are two practical CP-SAT optimization modes:
+There are three practical CP-SAT-style optimization modes:
 
 ```text
 1. Joint CP-SAT
@@ -306,7 +477,29 @@ There are two practical CP-SAT optimization modes:
    The initial layout is selected by a greedy/local-search heuristic, then the
    routing CP-SAT model runs with that layout fixed. This is usually the more
    scalable option.
+
+3. Windowed routing CP-SAT
+   Use `--solver window-cp-sat`.
+   The initial layout is fixed by the interaction-weighted heuristic, the circuit
+   is split into windows, and each window is solved sequentially with the same
+   routing CP-SAT objective. Each window final layout is passed to the next
+   window as its fixed initial layout.
 ```
+
+## Large-Heuristic Mode
+
+`--solver large-heuristic` is a scalable heuristic mode for larger benchmark circuits, such as hundreds of logical qubits and hundreds of random gates. It does not prove optimality.
+
+It performs:
+
+- interaction-weighted initial placement,
+- front-layer gate selection,
+- lookahead scoring of future two-qubit gates,
+- multiple shortest-path candidate checks,
+- encoded-SWAP and CXSWAP candidate comparison,
+- and greedy parallel layer scheduling.
+
+The score is heuristic, not a global objective. It favors routing moves that reduce front-layer and lookahead distances, while still accounting for macro-operation costs. The reported `schedule_duration` is computed after greedy parallel packing, so it can be much smaller than `total_pulses`.
 
 ## Initial-Layout Objective
 
@@ -315,6 +508,7 @@ This objective is used by the mode that decides the initial layout before routin
 ```text
 2. Initial-layout heuristic + routing CP-SAT
    --solver cp-sat --layout-strategy interaction
+   --solver window-cp-sat
    -> Greedy placement plus pair-swap local search reduces this objective to
       choose the initial layout.
 ```

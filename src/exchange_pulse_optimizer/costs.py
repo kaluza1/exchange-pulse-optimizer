@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from math import log
+
 
 DEFAULT_PULSE_COSTS = {
     "cx": 28,
@@ -21,6 +23,35 @@ DEFAULT_PULSE_COSTS = {
     "barrier": 0,
 }
 
+ONE_QUBIT_GATES = (
+    "h",
+    "x",
+    "y",
+    "z",
+    "s",
+    "sdg",
+    "t",
+    "tdg",
+    "rx",
+    "ry",
+    "rz",
+)
+
+DEFAULT_GATE_FIDELITIES = {
+    "cx": 0.9755,
+    "cxswap": 0.9738,
+    "cz": 0.9589,
+    "swap": 0.9903,
+    **{gate: 0.9986 for gate in ONE_QUBIT_GATES},
+    "measure": 1.0,
+    "barrier": 1.0,
+}
+
+OPERATION_FIDELITY_ALIASES = {
+    "encoded_swap": "swap",
+    "move_to_empty": "swap",
+}
+
 SUPPORTED_QISKIT_BASIS_GATES = (
     "cx",
     "cz",
@@ -37,3 +68,36 @@ SUPPORTED_QISKIT_BASIS_GATES = (
     "ry",
     "rz",
 )
+
+
+def estimate_operation_fidelity(
+    operation_names: list[str] | tuple[str, ...],
+    gate_fidelities: dict[str, float] | None = None,
+) -> float:
+    fidelities = DEFAULT_GATE_FIDELITIES | (gate_fidelities or {})
+    estimated_fidelity = 1.0
+    for name in operation_names:
+        fidelity_key = OPERATION_FIDELITY_ALIASES.get(name, name)
+        estimated_fidelity *= fidelities.get(fidelity_key, 1.0)
+    return estimated_fidelity
+
+
+def operation_error_cost(
+    operation_name: str,
+    gate_fidelities: dict[str, float] | None = None,
+    scale: int = 1_000_000,
+) -> int:
+    fidelities = DEFAULT_GATE_FIDELITIES | (gate_fidelities or {})
+    fidelity_key = OPERATION_FIDELITY_ALIASES.get(operation_name, operation_name)
+    fidelity = fidelities.get(fidelity_key, 1.0)
+    if not 0.0 < fidelity <= 1.0:
+        raise ValueError(f"gate fidelity must be in the range (0, 1]: {operation_name}={fidelity}")
+    return int(round(scale * -log(fidelity)))
+
+
+def total_operation_error_cost(
+    operation_names: list[str] | tuple[str, ...],
+    gate_fidelities: dict[str, float] | None = None,
+    scale: int = 1_000_000,
+) -> int:
+    return sum(operation_error_cost(name, gate_fidelities, scale) for name in operation_names)

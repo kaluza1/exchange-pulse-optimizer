@@ -1,0 +1,61 @@
+== initial layout ==
+{0: (72, 73, 74), 1: (51, 52, 53)}
+== pulse plan ==
+00: layer=  0 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+01: layer=  1 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+02: layer=  2 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+03: layer=  3 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+04: layer=  4 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+05: layer=  5 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+06: layer=  6 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+07: layer=  7 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+08: layer=  8 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+09: layer=  9 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+10: layer= 10 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+11: layer= 11 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+12: layer= 12 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+13: layer= 13 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+14: layer= 14 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+15: layer= 15 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+16: layer= 16 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+17: layer= 17 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+18: layer= 18 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+19: layer= 19 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+20: layer= 20 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+21: layer= 21 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+22: layer= 22 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+23: layer= 23 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+24: layer= 24 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+25: layer= 25 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+26: layer= 26 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+27: layer= 27 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+28: layer= 28 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+29: layer= 29 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+30: layer= 30 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+31: layer= 31 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+32: layer= 32 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+33: layer= 33 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+34: layer= 34 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+35: layer= 35 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+36: layer= 36 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+37: layer= 37 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+38: layer= 38 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+39: layer= 39 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+40: layer= 40 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+41: layer= 41 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+42: layer= 42 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+43: layer= 43 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+44: layer= 44 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+45: layer= 45 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+46: layer= 46 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+47: layer= 47 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+48: layer= 48 cx           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=28
+49: layer= 49 cz           logical=(0, 1) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+== result ==
+total_pulses = 1350
+schedule_duration = 1350
+estimated_fidelity = 0.18837133
+total_error_cost = 1669325
+elapsed_seconds = 124.935
+final_layout = {0: (72, 73, 74), 1: (51, 52, 53)}
+solver_status = window0:OPTIMAL;window1:OPTIMAL;window2:OPTIMAL;window3:OPTIMAL;window4:OPTIMAL;window5:OPTIMAL;window6:OPTIMAL;window7:OPTIMAL;window8:OPTIMAL;window9:OPTIMAL;window10:OPTIMAL;window11:OPTIMAL;window12:OPTIMAL;window13:OPTIMAL;window14:OPTIMAL;window15:OPTIMAL;window16:OPTIMAL;window17:OPTIMAL;window18:OPTIMAL;window19:OPTIMAL;window20:OPTIMAL;window21:OPTIMAL;window22:OPTIMAL;window23:OPTIMAL;window24:OPTIMAL

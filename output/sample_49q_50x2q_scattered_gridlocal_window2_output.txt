@@ -1,0 +1,84 @@
+== initial layout ==
+{0: (72, 73, 74), 1: (15, 16, 17), 2: (90, 91, 92), 3: (123, 124, 125), 4: (30, 31, 32), 5: (99, 100, 101), 6: (96, 97, 98), 7: (132, 133, 134), 8: (45, 46, 47), 9: (48, 49, 50), 10: (6, 7, 8), 11: (129, 130, 131), 12: (108, 109, 110), 13: (138, 139, 140), 14: (78, 79, 80), 15: (42, 43, 44), 16: (0, 1, 2), 17: (54, 55, 56), 18: (39, 40, 41), 19: (63, 64, 65), 20: (81, 82, 83), 21: (114, 115, 116), 22: (105, 106, 107), 23: (12, 13, 14), 24: (144, 145, 146), 25: (27, 28, 29), 26: (126, 127, 128), 27: (120, 121, 122), 28: (87, 88, 89), 29: (18, 19, 20), 30: (3, 4, 5), 31: (66, 67, 68), 32: (60, 61, 62), 33: (93, 94, 95), 34: (84, 85, 86), 35: (33, 34, 35), 36: (117, 118, 119), 37: (51, 52, 53), 38: (141, 142, 143), 39: (24, 25, 26), 40: (21, 22, 23), 41: (75, 76, 77), 42: (9, 10, 11), 43: (102, 103, 104), 44: (69, 70, 71), 45: (135, 136, 137), 46: (36, 37, 38), 47: (57, 58, 59), 48: (111, 112, 113)}
+== pulse plan ==
+00: layer=  0 encoded_swap logical=(14, 41) dots=((75, 76, 77), (78, 79, 80)) pulses=15
+01: layer=  1 cx           logical=(14, 0) dots=((75, 76, 77), (72, 73, 74)) pulses=28
+02: layer=  2 cz           logical=(0, 37) dots=((72, 73, 74), (51, 52, 53)) pulses=26
+03: layer=  3 cx           logical=(37, 9) dots=((51, 52, 53), (48, 49, 50)) pulses=28
+04: layer=  4 cz           logical=(9, 44) dots=((48, 49, 50), (69, 70, 71)) pulses=26
+05: layer=  5 cx           logical=(44, 2) dots=((69, 70, 71), (90, 91, 92)) pulses=28
+06: layer=  6 cz           logical=(2, 28) dots=((90, 91, 92), (87, 88, 89)) pulses=26
+07: layer=  7 encoded_swap logical=(14, 41) dots=((75, 76, 77), (78, 79, 80)) pulses=15
+08: layer=  8 cx           logical=(17, 41) dots=((54, 55, 56), (75, 76, 77)) pulses=28
+09: layer=  9 cz           logical=(41, 6) dots=((75, 76, 77), (96, 97, 98)) pulses=26
+10: layer= 10 cx           logical=(6, 33) dots=((96, 97, 98), (93, 94, 95)) pulses=28
+11: layer= 11 cz           logical=(33, 21) dots=((93, 94, 95), (114, 115, 116)) pulses=26
+12: layer= 12 cx           logical=(21, 48) dots=((114, 115, 116), (111, 112, 113)) pulses=28
+13: layer= 13 cz           logical=(48, 12) dots=((111, 112, 113), (108, 109, 110)) pulses=26
+14: layer= 14 cx           logical=(35, 4) dots=((33, 34, 35), (30, 31, 32)) pulses=28
+15: layer= 15 cz           logical=(4, 25) dots=((30, 31, 32), (27, 28, 29)) pulses=26
+16: layer= 16 cx           logical=(25, 39) dots=((27, 28, 29), (24, 25, 26)) pulses=28
+17: layer= 17 cz           logical=(39, 8) dots=((24, 25, 26), (45, 46, 47)) pulses=26
+18: layer= 18 cx           logical=(8, 31) dots=((45, 46, 47), (66, 67, 68)) pulses=28
+19: layer= 19 cz           logical=(31, 19) dots=((66, 67, 68), (63, 64, 65)) pulses=26
+20: layer= 20 cx           logical=(46, 1) dots=((36, 37, 38), (15, 16, 17)) pulses=28
+21: layer= 21 cz           logical=(1, 23) dots=((15, 16, 17), (12, 13, 14)) pulses=26
+22: layer= 22 cx           logical=(23, 42) dots=((12, 13, 14), (9, 10, 11)) pulses=28
+23: layer= 23 cz           logical=(42, 10) dots=((9, 10, 11), (6, 7, 8)) pulses=26
+24: layer= 24 cx           logical=(10, 30) dots=((6, 7, 8), (3, 4, 5)) pulses=28
+25: layer= 25 cz           logical=(30, 16) dots=((3, 4, 5), (0, 1, 2)) pulses=26
+26: layer= 26 encoded_swap logical=(14, 47) dots=((57, 58, 59), (78, 79, 80)) pulses=15
+27: layer= 27 cx           logical=(47, 5) dots=((78, 79, 80), (99, 100, 101)) pulses=28
+28: layer= 28 cz           logical=(5, 27) dots=((99, 100, 101), (120, 121, 122)) pulses=26
+29: layer= 29 cx           logical=(27, 36) dots=((120, 121, 122), (117, 118, 119)) pulses=28
+30: layer= 30 cz           logical=(36, 13) dots=((117, 118, 119), (138, 139, 140)) pulses=26
+31: layer= 31 cx           logical=(13, 45) dots=((138, 139, 140), (135, 136, 137)) pulses=28
+32: layer= 32 cz           logical=(45, 7) dots=((135, 136, 137), (132, 133, 134)) pulses=26
+33: layer= 33 cx           logical=(32, 20) dots=((60, 61, 62), (81, 82, 83)) pulses=28
+34: layer= 34 cz           logical=(20, 43) dots=((81, 82, 83), (102, 103, 104)) pulses=26
+35: layer= 35 cx           logical=(43, 3) dots=((102, 103, 104), (123, 124, 125)) pulses=28
+36: layer= 36 cz           logical=(3, 24) dots=((123, 124, 125), (144, 145, 146)) pulses=26
+37: layer= 37 cx           logical=(24, 38) dots=((144, 145, 146), (141, 142, 143)) pulses=28
+38: layer= 37 encoded_swap logical=(7, 11) dots=((129, 130, 131), (132, 133, 134)) pulses=15
+39: layer= 38 encoded_swap logical=(11, 45) dots=((132, 133, 134), (135, 136, 137)) pulses=15
+40: layer= 38 encoded_swap logical=(13, 38) dots=((138, 139, 140), (141, 142, 143)) pulses=15
+41: layer= 39 cz           logical=(38, 11) dots=((138, 139, 140), (135, 136, 137)) pulses=26
+42: layer= 40 cx           logical=(29, 18) dots=((18, 19, 20), (39, 40, 41)) pulses=28
+43: layer= 40 encoded_swap logical=(39, 40) dots=((21, 22, 23), (24, 25, 26)) pulses=15
+44: layer= 41 encoded_swap logical=(25, 40) dots=((24, 25, 26), (27, 28, 29)) pulses=15
+45: layer= 41 encoded_swap logical=(18, 46) dots=((36, 37, 38), (39, 40, 41)) pulses=15
+46: layer= 42 encoded_swap logical=(4, 40) dots=((27, 28, 29), (30, 31, 32)) pulses=15
+47: layer= 42 encoded_swap logical=(18, 35) dots=((33, 34, 35), (36, 37, 38)) pulses=15
+48: layer= 43 cz           logical=(18, 40) dots=((33, 34, 35), (30, 31, 32)) pulses=26
+49: layer= 44 encoded_swap logical=(4, 40) dots=((27, 28, 29), (30, 31, 32)) pulses=15
+50: layer= 44 encoded_swap logical=(8, 15) dots=((42, 43, 44), (45, 46, 47)) pulses=15
+51: layer= 44 encoded_swap logical=(19, 34) dots=((63, 64, 65), (84, 85, 86)) pulses=15
+52: layer= 45 encoded_swap logical=(25, 40) dots=((24, 25, 26), (27, 28, 29)) pulses=15
+53: layer= 45 encoded_swap logical=(31, 34) dots=((63, 64, 65), (66, 67, 68)) pulses=15
+54: layer= 46 cx           logical=(40, 15) dots=((24, 25, 26), (45, 46, 47)) pulses=28
+55: layer= 47 cz           logical=(15, 34) dots=((45, 46, 47), (66, 67, 68)) pulses=26
+56: layer= 48 encoded_swap logical=(28, 34) dots=((66, 67, 68), (87, 88, 89)) pulses=15
+57: layer= 48 encoded_swap logical=(19, 22) dots=((84, 85, 86), (105, 106, 107)) pulses=15
+58: layer= 49 cx           logical=(34, 22) dots=((87, 88, 89), (84, 85, 86)) pulses=28
+59: layer= 49 encoded_swap logical=(19, 26) dots=((105, 106, 107), (126, 127, 128)) pulses=15
+60: layer= 50 cz           logical=(22, 26) dots=((84, 85, 86), (105, 106, 107)) pulses=26
+61: layer= 51 cxswap       logical=(14, 17) dots=((57, 58, 59), (54, 55, 56)) pulses=31
+62: layer= 52 cz           logical=(17, 35) dots=((57, 58, 59), (36, 37, 38)) pulses=26
+63: layer= 53 cxswap       logical=(35, 46) dots=((36, 37, 38), (39, 40, 41)) pulses=31
+64: layer= 53 encoded_swap logical=(17, 47) dots=((57, 58, 59), (78, 79, 80)) pulses=15
+65: layer= 54 cz           logical=(46, 47) dots=((36, 37, 38), (57, 58, 59)) pulses=26
+66: layer= 55 cx           logical=(47, 32) dots=((57, 58, 59), (60, 61, 62)) pulses=28
+67: layer= 55 encoded_swap logical=(29, 35) dots=((18, 19, 20), (39, 40, 41)) pulses=15
+68: layer= 56 cz           logical=(32, 29) dots=((60, 61, 62), (39, 40, 41)) pulses=26
+69: layer= 57 encoded_swap logical=(28, 34) dots=((66, 67, 68), (87, 88, 89)) pulses=15
+70: layer= 58 cx           logical=(28, 12) dots=((87, 88, 89), (108, 109, 110)) pulses=28
+71: layer= 58 encoded_swap logical=(19, 26) dots=((105, 106, 107), (126, 127, 128)) pulses=15
+72: layer= 59 cz           logical=(12, 19) dots=((108, 109, 110), (105, 106, 107)) pulses=26
+== result ==
+total_pulses = 1701
+schedule_duration = 1506
+estimated_fidelity = 0.15001536
+total_error_cost = 1896994
+elapsed_seconds = 195.436
+final_layout = {0: (72, 73, 74), 1: (15, 16, 17), 2: (90, 91, 92), 3: (123, 124, 125), 4: (30, 31, 32), 5: (99, 100, 101), 6: (96, 97, 98), 7: (129, 130, 131), 8: (42, 43, 44), 9: (48, 49, 50), 10: (6, 7, 8), 11: (135, 136, 137), 12: (108, 109, 110), 13: (141, 142, 143), 14: (54, 55, 56), 15: (45, 46, 47), 16: (0, 1, 2), 17: (78, 79, 80), 18: (33, 34, 35), 19: (105, 106, 107), 20: (81, 82, 83), 21: (114, 115, 116), 22: (84, 85, 86), 23: (12, 13, 14), 24: (144, 145, 146), 25: (27, 28, 29), 26: (126, 127, 128), 27: (120, 121, 122), 28: (87, 88, 89), 29: (39, 40, 41), 30: (3, 4, 5), 31: (63, 64, 65), 32: (60, 61, 62), 33: (93, 94, 95), 34: (66, 67, 68), 35: (18, 19, 20), 36: (117, 118, 119), 37: (51, 52, 53), 38: (138, 139, 140), 39: (21, 22, 23), 40: (24, 25, 26), 41: (75, 76, 77), 42: (9, 10, 11), 43: (102, 103, 104), 44: (69, 70, 71), 45: (132, 133, 134), 46: (36, 37, 38), 47: (57, 58, 59), 48: (111, 112, 113)}
+solver_status = window0:OPTIMAL;window1:OPTIMAL;window2:OPTIMAL;window3:OPTIMAL;window4:OPTIMAL;window5:OPTIMAL;window6:OPTIMAL;window7:OPTIMAL;window8:OPTIMAL;window9:OPTIMAL;window10:OPTIMAL;window11:OPTIMAL;window12:OPTIMAL;window13:OPTIMAL;window14:OPTIMAL;window15:OPTIMAL;window16:OPTIMAL;window17:OPTIMAL;window18:OPTIMAL;window19:OPTIMAL;window20:OPTIMAL;window21:OPTIMAL;window22:OPTIMAL;window23:OPTIMAL;window24:OPTIMAL

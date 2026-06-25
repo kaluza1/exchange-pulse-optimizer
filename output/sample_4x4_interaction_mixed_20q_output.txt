@@ -1,0 +1,46 @@
+== initial layout ==
+{0: (0, 1, 2), 1: (39, 40, 41), 2: (33, 34, 35), 3: (42, 43, 44), 4: (18, 19, 20), 5: (3, 4, 5), 6: (27, 28, 29), 7: (21, 22, 23), 8: (9, 10, 11), 9: (24, 25, 26), 10: (6, 7, 8), 11: (15, 16, 17), 12: (30, 31, 32), 13: (45, 46, 47), 14: (36, 37, 38), 15: (12, 13, 14)}
+== pulse plan ==
+00: layer=  0 rx           logical=(0,) dots=((0, 1, 2),) pulses=3
+01: layer=  0 ry           logical=(5,) dots=((3, 4, 5),) pulses=3
+02: layer=  0 ry           logical=(7,) dots=((21, 22, 23),) pulses=3
+03: layer=  0 rz           logical=(10,) dots=((6, 7, 8),) pulses=1
+04: layer=  1 cxswap       logical=(7, 8) dots=((21, 22, 23), (9, 10, 11)) pulses=31
+05: layer=  1 cx           logical=(6, 9) dots=((27, 28, 29), (24, 25, 26)) pulses=28
+06: layer=  1 cz           logical=(5, 10) dots=((3, 4, 5), (6, 7, 8)) pulses=26
+07: layer=  1 cxswap       logical=(4, 11) dots=((18, 19, 20), (15, 16, 17)) pulses=31
+08: layer=  1 cxswap       logical=(3, 12) dots=((42, 43, 44), (30, 31, 32)) pulses=31
+09: layer=  1 cz           logical=(2, 13) dots=((33, 34, 35), (45, 46, 47)) pulses=26
+10: layer=  1 cx           logical=(1, 14) dots=((39, 40, 41), (36, 37, 38)) pulses=28
+11: layer=  1 cx           logical=(0, 15) dots=((0, 1, 2), (12, 13, 14)) pulses=28
+12: layer=  2 encoded_swap logical=(4, 5) dots=((3, 4, 5), (15, 16, 17)) pulses=15
+13: layer=  2 encoded_swap logical=(3, 11) dots=((18, 19, 20), (30, 31, 32)) pulses=15
+14: layer=  2 encoded_swap logical=(2, 8) dots=((21, 22, 23), (33, 34, 35)) pulses=15
+15: layer=  3 h            logical=(11,) dots=((30, 31, 32),) pulses=3
+16: layer=  3 rz           logical=(12,) dots=((42, 43, 44),) pulses=1
+17: layer=  3 h            logical=(15,) dots=((12, 13, 14),) pulses=3
+18: layer=  4 encoded_swap logical=(4, 10) dots=((3, 4, 5), (6, 7, 8)) pulses=15
+19: layer=  4 encoded_swap logical=(5, 15) dots=((12, 13, 14), (15, 16, 17)) pulses=15
+20: layer=  4 encoded_swap logical=(11, 12) dots=((30, 31, 32), (42, 43, 44)) pulses=15
+21: layer=  5 rz           logical=(4,) dots=((6, 7, 8),) pulses=1
+22: layer=  5 x            logical=(3,) dots=((18, 19, 20),) pulses=3
+23: layer=  5 cz           logical=(11, 12) dots=((42, 43, 44), (30, 31, 32)) pulses=26
+24: layer=  5 cx           logical=(2, 7) dots=((21, 22, 23), (9, 10, 11)) pulses=28
+25: layer=  5 cz           logical=(1, 6) dots=((39, 40, 41), (27, 28, 29)) pulses=26
+26: layer=  5 rx           logical=(14,) dots=((36, 37, 38),) pulses=3
+27: layer=  5 cx           logical=(0, 5) dots=((0, 1, 2), (12, 13, 14)) pulses=28
+28: layer=  5 cx           logical=(10, 15) dots=((3, 4, 5), (15, 16, 17)) pulses=28
+29: layer=  6 cx           logical=(3, 4) dots=((18, 19, 20), (6, 7, 8)) pulses=28
+30: layer=  6 cz           logical=(8, 13) dots=((33, 34, 35), (45, 46, 47)) pulses=26
+31: layer=  6 cx           logical=(1, 11) dots=((39, 40, 41), (42, 43, 44)) pulses=28
+32: layer=  6 cz           logical=(6, 12) dots=((27, 28, 29), (30, 31, 32)) pulses=26
+33: layer=  6 cz           logical=(9, 14) dots=((24, 25, 26), (36, 37, 38)) pulses=26
+34: layer=  6 cx           logical=(0, 10) dots=((0, 1, 2), (3, 4, 5)) pulses=28
+35: layer=  6 cx           logical=(5, 15) dots=((12, 13, 14), (15, 16, 17)) pulses=28
+== result ==
+total_pulses = 669
+schedule_duration = 123
+estimated_fidelity = 0.49958751
+total_error_cost = 693965
+final_layout = {0: (0, 1, 2), 1: (39, 40, 41), 2: (21, 22, 23), 3: (18, 19, 20), 4: (6, 7, 8), 5: (12, 13, 14), 6: (27, 28, 29), 7: (9, 10, 11), 8: (33, 34, 35), 9: (24, 25, 26), 10: (3, 4, 5), 11: (42, 43, 44), 12: (30, 31, 32), 13: (45, 46, 47), 14: (36, 37, 38), 15: (15, 16, 17)}
+solver_status = FEASIBLE

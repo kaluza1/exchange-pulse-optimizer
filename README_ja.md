@@ -1,4 +1,4 @@
-# Exchange Pulse Optimizer
+﻿# Exchange Pulse Optimizer
 
 [English README](README.md)
 
@@ -143,6 +143,27 @@ exchange-pulse-opt examples\sample_4x4_interaction_20q.qasm examples\grid4x4_top
 
 出力例は `output/sample_4x4_interaction_20q_output.txt` に保存されます。
 
+7x7正方格子で、49論理qubit・50個の2量子ビットゲートを含む例:
+
+```powershell
+exchange-pulse-opt examples\sample_49q_50x2q_scattered_gridlocal.qasm examples\grid7x7_topology.json --solver window-cp-sat --window-size 2 --window-sat-layers 4 --time-limit 60 --cp-sat-workers 1 --output-dir output --no-qiskit-transpile
+```
+
+この例では、各windowが `OPTIMAL` で解け、出力は
+`output/sample_49q_50x2q_scattered_gridlocal_output.txt` に保存されます。
+手元の実行例では、`total_pulses = 1701`, `schedule_duration = 1506`,
+`estimated_fidelity = 0.15001536` でした。
+
+30x30正方格子で、900論理qubit・1000個の完全ランダムな2量子ビットゲートを `large-heuristic` で実行:
+
+```powershell
+exchange-pulse-opt examples\sample_900q_1000x2q_random.qasm examples\grid30x30_topology.json --solver large-heuristic --output-dir output --no-qiskit-transpile
+```
+
+出力例は `output/sample_900q_1000x2q_random_output.txt` に保存されます。
+手元の実行例では、`total_pulses = 125502`, `schedule_duration = 1752`,
+`estimated_fidelity = 3.0630504e-43`, `elapsed_seconds = 1679.932` でした。
+
 ## CLIオプション一覧
 
 基本引数:
@@ -183,6 +204,10 @@ CP-SAT関連:
 --time-limit SEC
   routing CP-SAT本体の時間制限です。
   デフォルト: 30
+
+--cp-sat-workers N
+  OR-Tools CP-SATの探索worker数です。solverが使うCPUコア数を選びたい場合に指定します。
+  未指定の場合はOR-Toolsの自動設定を使います。
 ```
 
 初期配置heuristic関連:
@@ -271,7 +296,7 @@ OpenQASM入力内の論理 `swap` はCP-SATモードでも対応しています�
 
 ## 配置とルーティングのモード
 
-実用上は、次の2段階として扱えます。
+実用上は、次の3つのCP-SAT系モードとして扱えます。
 
 ```text
 1. 全同時CP-SAT
@@ -281,8 +306,57 @@ OpenQASM入力内の論理 `swap` はCP-SATモードでも対応しています�
 2. 初期配置ヒューリスティック + routing CP-SAT
    `--solver cp-sat --layout-strategy interaction` を使います。
    初期配置は貪欲法と局所探索で決め、その配置を固定してrouting側のCP-SATを
-   実行します。大きめの回路ではこの方がスケールしやすいです。
+   実行します。全同時CP-SATよりは軽いですが、回路全体を1つのrouting CP-SATとして
+   解くため、さらに大きい回路では3のWindow分割 routing CP-SATを使います。
+
+3. Window分割 routing CP-SAT
+   `--solver window-cp-sat` を使います。
+   初期配置は相互作用重み付きヒューリスティックで固定し、回路をwindowに分割して、
+   各windowを既存と同じ目的関数のrouting CP-SATで順番に解きます。
+   各windowのfinal_layoutは次のwindowのinitial_layoutとして渡されます。
 ```
+
+補足:
+
+`window-cp-sat` は、目的関数を変えるモードではありません。既存のrouting CP-SATと同じ目的関数を使い、CP-SATに入れる問題を小さいwindowへ分割することでスケールさせます。
+
+```text
+minimize
+  makespan_weight * schedule_duration
++ swap_weight * encoded_swap_count
++ error_weight * total_error_cost
+```
+
+実行内容は次の通りです。
+
+```text
+1. interaction_weighted_layout() で初期配置を決める
+2. 回路を --window-size ごとの小さいwindowに分割する
+3. 各windowを既存の CpSatPulseOptimizer で解く
+4. 各windowの final_layout を次windowの initial_layout として渡す
+```
+
+使用例:
+
+```powershell
+exchange-pulse-opt examples\sample_4x4_interaction_20q.qasm examples\grid4x4_topology.json --solver window-cp-sat --window-size 8 --window-sat-layers 20 --time-limit 60 --output-dir output
+```
+
+追加オプション:
+
+```text
+--window-size N
+  1つのwindowに入れる回路operation数です。デフォルト: 20
+
+--window-sat-layers N
+  各windowのrouting CP-SATで使う最大macro layer数です。
+  未指定の場合はwindowサイズとencoded slot数から概算します。
+
+--cp-sat-workers N
+  各window内のCP-SAT探索で使うworker数です。window同士は順番に解きます。
+```
+
+このモードは、全体CP-SATより軽く、large-heuristicより局所的に強い解を狙うための中間モードです。領域分割やKernighan-Lin風の分割は、今後このwindow分割の上に追加できます。
 
 ## 初期配置目的関数
 
@@ -291,6 +365,7 @@ OpenQASM入力内の論理 `swap` はCP-SATモードでも対応しています�
 ```text
 2. 初期配置ヒューリスティック + routing CP-SAT
    --solver cp-sat --layout-strategy interaction
+   --solver window-cp-sat
    → この目的関数を貪欲法 + pair-swap局所探索で小さくして、
      初期配置を決めます。
 ```

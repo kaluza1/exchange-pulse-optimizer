@@ -8,7 +8,7 @@ from typing import Any
 import networkx as nx
 from qiskit import QuantumCircuit
 
-from .costs import DEFAULT_PULSE_COSTS
+from .costs import DEFAULT_GATE_FIDELITIES, DEFAULT_PULSE_COSTS, estimate_operation_fidelity, total_operation_error_cost
 from .layout import interaction_weighted_layout
 from .topology import EncodedTopology
 
@@ -30,6 +30,9 @@ class PulsePlan:
     steps: list[PulseStep] = field(default_factory=list)
     solver_status: str | None = None
     schedule_duration: int | None = None
+    estimated_fidelity: float | None = None
+    total_error_cost: int | None = None
+    elapsed_seconds: float | None = None
 
 
 class PulseCountOptimizer:
@@ -45,6 +48,8 @@ class PulseCountOptimizer:
         self,
         topology: EncodedTopology,
         pulse_costs: dict[str, int] | None = None,
+        gate_fidelities: dict[str, float] | None = None,
+        error_scale: int = 1_000_000,
         max_layouts: int = 40320,
         layout_strategy: str = "exhaustive",
         layout_decay: float = 0.98,
@@ -61,6 +66,10 @@ class PulseCountOptimizer:
             raise ValueError("encoded groups must form a connected interaction graph.")
 
         self._pulse_costs = DEFAULT_PULSE_COSTS | (pulse_costs or {})
+        self._gate_fidelities = DEFAULT_GATE_FIDELITIES | (gate_fidelities or {})
+        self._error_scale = error_scale
+        if error_scale <= 0:
+            raise ValueError("error_scale must be positive.")
         self._max_layouts = max_layouts
         self._layout_strategy = layout_strategy
         self._layout_decay = layout_decay
@@ -156,6 +165,15 @@ class PulseCountOptimizer:
             pulse_count=pulse_count,
             steps=steps,
             schedule_duration=pulse_count,
+            estimated_fidelity=estimate_operation_fidelity(
+                tuple(step.name for step in steps),
+                self._gate_fidelities,
+            ),
+            total_error_cost=total_operation_error_cost(
+                tuple(step.name for step in steps),
+                self._gate_fidelities,
+                self._error_scale,
+            ),
         )
 
     def _public_layout(self, layout: dict[int, int]) -> dict[int, tuple[Any, ...]]:

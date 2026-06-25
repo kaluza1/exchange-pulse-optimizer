@@ -5,7 +5,13 @@ from typing import Any
 
 from qiskit import QuantumCircuit
 
-from .costs import DEFAULT_PULSE_COSTS
+from .costs import (
+    DEFAULT_GATE_FIDELITIES,
+    DEFAULT_PULSE_COSTS,
+    estimate_operation_fidelity,
+    operation_error_cost,
+    total_operation_error_cost,
+)
 from .optimizer import PulsePlan, PulseStep
 from .topology import EncodedTopology
 
@@ -23,6 +29,10 @@ class _Gate:
     cost: int
 
 
+def _commutes_for_ordering(left: _Gate, right: _Gate) -> bool:
+    return left.name == "cz" and right.name == "cz"
+
+
 class CpSatPulseOptimizer:
     """
     Bounded exact optimizer for layout, routing swaps, and parallel macro layers.
@@ -35,10 +45,15 @@ class CpSatPulseOptimizer:
         self,
         topology: EncodedTopology,
         pulse_costs: dict[str, int] | None = None,
+        gate_fidelities: dict[str, float] | None = None,
         max_layers: int | None = None,
         time_limit_seconds: float | None = 30.0,
         makespan_weight: int = 1000,
+        swap_weight: int = 10,
+        error_weight: int = 1,
+        error_scale: int = 1_000_000,
         initial_layout: dict[int, int] | None = None,
+        num_search_workers: int | None = None,
     ) -> None:
         if cp_model is None:
             raise ModuleNotFoundError("ortools is required for CP-SAT mode. Install with: py -m pip install ortools")
@@ -50,10 +65,27 @@ class CpSatPulseOptimizer:
         self._slots = list(self._slot_graph.nodes)
         self._edges = [tuple(edge) for edge in self._slot_graph.edges]
         self._pulse_costs = DEFAULT_PULSE_COSTS | (pulse_costs or {})
+        self._gate_fidelities = DEFAULT_GATE_FIDELITIES | (gate_fidelities or {})
         self._max_layers = max_layers
         self._time_limit_seconds = time_limit_seconds
         self._makespan_weight = makespan_weight
+        self._swap_weight = swap_weight
+        self._error_weight = error_weight
+        self._error_scale = error_scale
         self._initial_layout = initial_layout
+        self._num_search_workers = num_search_workers
+        for name, value in (
+            ("makespan_weight", makespan_weight),
+            ("swap_weight", swap_weight),
+            ("error_weight", error_weight),
+            ("error_scale", error_scale),
+        ):
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative.")
+        if error_scale == 0 and error_weight > 0:
+            raise ValueError("error_scale must be positive when error_weight is non-zero.")
+        if num_search_workers is not None and num_search_workers <= 0:
+            raise ValueError("num_search_workers must be positive.")
 
     def optimize(self, qc: QuantumCircuit) -> PulsePlan:
         if qc.num_qubits > self._encoded_topology.num_encoded_slots:
@@ -239,11 +271,21 @@ class CpSatPulseOptimizer:
             layer_duration.append(duration)
 
         swap_count = sum(swp[e_idx, t] for e_idx in range(len(edges)) for t in range(layers))
-        model.Minimize(self._makespan_weight * sum(layer_duration) + swap_count)
+        total_error_cost = self._total_error_cost_expr(gates, layers, run, cxswap_run, swp, len(edges))
+        objective_terms = []
+        if self._makespan_weight:
+            objective_terms.append(self._makespan_weight * sum(layer_duration))
+        if self._swap_weight:
+            objective_terms.append(self._swap_weight * swap_count)
+        if self._error_weight:
+            objective_terms.append(self._error_weight * total_error_cost)
+        model.Minimize(sum(objective_terms))
 
         solver = cp_model.CpSolver()
         if self._time_limit_seconds is not None:
             solver.parameters.max_time_in_seconds = self._time_limit_seconds
+        if self._num_search_workers is not None:
+            solver.parameters.num_search_workers = self._num_search_workers
         status = solver.Solve(model)
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             raise ValueError(f"CP-SAT found no solution within {layers} layers. Try increasing --sat-layers.")
@@ -279,14 +321,41 @@ class CpSatPulseOptimizer:
         return gates
 
     def _dependencies(self, gates: list[_Gate], num_qubits: int) -> list[tuple[int, int]]:
-        last_on_qubit: list[int | None] = [None] * num_qubits
         deps = []
-        for gate in gates:
-            for q in gate.qubits:
-                if last_on_qubit[q] is not None:
-                    deps.append((last_on_qubit[q], gate.index))
-                last_on_qubit[q] = gate.index
+        for later_index, later in enumerate(gates):
+            later_qubits = set(later.qubits)
+            for earlier in gates[:later_index]:
+                if later_qubits.isdisjoint(earlier.qubits):
+                    continue
+                if _commutes_for_ordering(earlier, later):
+                    continue
+                deps.append((earlier.index, later.index))
         return deps
+
+    def _total_error_cost_expr(self, gates, layers, run, cxswap_run, swp, num_edges):
+        terms = []
+        cx_error = operation_error_cost("cx", self._gate_fidelities, self._error_scale)
+        cxswap_error = operation_error_cost("cxswap", self._gate_fidelities, self._error_scale)
+        swap_error = operation_error_cost("swap", self._gate_fidelities, self._error_scale)
+
+        for gate in gates:
+            if gate.name == "cx":
+                for t in range(layers):
+                    terms.append(cx_error * run[gate.index, t])
+                    terms.append((cxswap_error - cx_error) * cxswap_run[gate.index, t])
+            elif gate.name == "cxswap":
+                for t in range(layers):
+                    terms.append(cxswap_error * run[gate.index, t])
+            else:
+                gate_error = operation_error_cost(gate.name, self._gate_fidelities, self._error_scale)
+                for t in range(layers):
+                    terms.append(gate_error * run[gate.index, t])
+
+        for e_idx in range(num_edges):
+            for t in range(layers):
+                terms.append(swap_error * swp[e_idx, t])
+
+        return sum(terms)
 
     def _adjacent_pair_vars(self, model, occ, gates, layers, num_slots, edges):
         adjacent_pair = {}
@@ -388,6 +457,15 @@ class CpSatPulseOptimizer:
             steps=steps,
             solver_status=status_name,
             schedule_duration=sum(solver.Value(duration) for duration in layer_duration),
+            estimated_fidelity=estimate_operation_fidelity(
+                tuple(step.name for step in steps),
+                self._gate_fidelities,
+            ),
+            total_error_cost=total_operation_error_cost(
+                tuple(step.name for step in steps),
+                self._gate_fidelities,
+                self._error_scale,
+            ),
         )
 
     def _slot_layout_from_occ(self, solver, occ, t, qubits, slots) -> dict[int, int]:

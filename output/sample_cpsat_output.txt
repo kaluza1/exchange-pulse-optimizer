@@ -1,14 +1,17 @@
 == initial layout ==
-{0: (9, 10, 11), 1: (0, 1, 2), 2: (3, 4, 5), 3: (6, 7, 8)}
+{0: (6, 7, 8), 1: (0, 1, 2), 2: (3, 4, 5), 3: (9, 10, 11)}
 == pulse plan ==
-00: layer=  0 h            logical=(0,) dots=((9, 10, 11),) pulses=3
+00: layer=  0 h            logical=(0,) dots=((6, 7, 8),) pulses=3
 01: layer=  0 h            logical=(1,) dots=((0, 1, 2),) pulses=3
 02: layer=  1 cx           logical=(1, 2) dots=((0, 1, 2), (3, 4, 5)) pulses=28
-03: layer=  1 cx           logical=(0, 3) dots=((9, 10, 11), (6, 7, 8)) pulses=28
-04: layer=  2 rz           logical=(2,) dots=((3, 4, 5),) pulses=1
-05: layer=  2 rz           logical=(0,) dots=((9, 10, 11),) pulses=1
+03: layer=  2 rz           logical=(2,) dots=((3, 4, 5),) pulses=1
+04: layer=  2 cx           logical=(0, 3) dots=((6, 7, 8), (9, 10, 11)) pulses=28
+05: layer=  3 rz           logical=(0,) dots=((6, 7, 8),) pulses=1
 == result ==
 total_pulses = 64
-schedule_duration = 32
-final_layout = {0: (9, 10, 11), 1: (0, 1, 2), 2: (3, 4, 5), 3: (6, 7, 8)}
-solver_status = OPTIMAL
+schedule_duration = 60
+estimated_fidelity = 0.94628247
+total_error_cost = 55214
+elapsed_seconds = 0.455
+final_layout = {0: (6, 7, 8), 1: (0, 1, 2), 2: (3, 4, 5), 3: (9, 10, 11)}
+solver_status = window0:OPTIMAL;window1:OPTIMAL
