@@ -154,6 +154,46 @@ Print JSON output:
 exchange-pulse-opt examples\sample.qasm examples\line3_topology.json --json
 ```
 
+Choose the CPU worker count for the selected solver:
+
+```powershell
+exchange-pulse-opt examples\sample.qasm examples\line3_topology.json --workers 4
+```
+
+Worker settings can also be specified per solver in a JSON file. The repository
+contains `optimizer_config.json` as an editable example:
+
+```powershell
+exchange-pulse-opt examples\sample.qasm examples\line3_topology.json --config optimizer_config.json
+```
+
+```json
+{
+  "workers": {
+    "heuristic": "auto",
+    "large-heuristic": 1,
+    "cp-sat": "auto",
+    "window-cp-sat": "auto"
+  },
+  "auto": {
+    "max_workers": 8,
+    "reserve_logical_cpus": 1
+  }
+}
+```
+
+`--workers` overrides the setting for the selected solver. A positive integer
+uses that exact number of workers, `all` uses every logical CPU available to the
+process, and `auto` uses at most `auto.max_workers` while reserving
+`auto.reserve_logical_cpus` for the operating system. Without `--config` or
+`--workers`, the built-in policy is the same as the example above. Thus, on a
+24-logical-CPU machine, `auto` resolves to 8 workers. `large-heuristic` defaults
+to 1 because its routing decisions are sequential and process communication can
+cost more than parallel candidate scoring on small or medium inputs. Use
+`--workers 1` for a reproducible single-worker baseline. This worker budget
+applies to the optimizer stage; it does not parallelize the single-circuit
+Qiskit preprocessing pass.
+
 Save a physical-dot topology figure:
 
 ```powershell
@@ -262,6 +302,16 @@ Execution mode:
   window-cp-sat   : Fixed initial layout plus windowed routing CP-SAT.
   Default: heuristic
 
+--config PATH
+  JSON file with per-solver worker settings and the auto policy.
+  No file is loaded implicitly; omitting this option uses built-in defaults.
+
+--workers N|auto|all
+  Worker count for the selected solver. This option overrides --config.
+  heuristic parallelizes exhaustive initial-layout candidates when the search is large enough.
+  large-heuristic parallelizes routing-candidate scoring when enough candidates exist.
+  cp-sat and window-cp-sat pass the value to the OR-Tools CP-SAT solver.
+
 --layout-strategy exhaustive|interaction
   Selects how the initial layout is chosen.
   exhaustive  : In CP-SAT mode, initial layout is optimized inside the same
@@ -281,9 +331,8 @@ CP-SAT options:
   Time limit for the routing CP-SAT model. In `window-cp-sat`, this applies per window.
   Default: 30
 
---cp-sat-workers N
-  Number of OR-Tools CP-SAT search workers. Use this to choose how many CPU cores the solver may use.
-  If omitted, OR-Tools uses its automatic setting.
+--cp-sat-workers N|auto|all
+  Deprecated compatibility alias for --workers in CP-SAT modes.
 
 --window-size N
   Number of circuit operations per `window-cp-sat` subproblem. Default: 20

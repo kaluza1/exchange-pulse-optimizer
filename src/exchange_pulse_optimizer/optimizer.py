@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
-from itertools import permutations
-from math import inf
+from itertools import islice, permutations
+from math import ceil, inf, perm
 from typing import Any
 
 import networkx as nx
@@ -11,6 +12,9 @@ from qiskit import QuantumCircuit
 from .costs import DEFAULT_GATE_FIDELITIES, DEFAULT_PULSE_COSTS, estimate_operation_fidelity, total_operation_error_cost
 from .layout import interaction_weighted_layout
 from .topology import EncodedTopology
+
+
+_MIN_LAYOUT_WORK_PER_WORKER = 50_000
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,7 @@ class PulseCountOptimizer:
         layout_strategy: str = "exhaustive",
         layout_decay: float = 0.98,
         layout_local_search_rounds: int = 2,
+        workers: int = 1,
     ) -> None:
         if topology.physical_graph.number_of_nodes() == 0:
             raise ValueError("physical topology must have at least one dot.")
@@ -70,10 +75,15 @@ class PulseCountOptimizer:
         self._error_scale = error_scale
         if error_scale <= 0:
             raise ValueError("error_scale must be positive.")
+        if max_layouts < 1:
+            raise ValueError("max_layouts must be positive.")
         self._max_layouts = max_layouts
         self._layout_strategy = layout_strategy
         self._layout_decay = layout_decay
         self._layout_local_search_rounds = layout_local_search_rounds
+        if workers < 1:
+            raise ValueError("workers must be positive.")
+        self._workers = workers
 
     def optimize(self, qc: QuantumCircuit) -> PulsePlan:
         if qc.num_qubits > self._encoded_topology.num_encoded_slots:
@@ -105,10 +115,29 @@ class PulseCountOptimizer:
 
         best_cost = inf
         best_layout = dict(zip(logical_qubits, nodes))
+        candidate_count = min(
+            self._max_layouts,
+            perm(len(nodes), len(logical_qubits)),
+        )
 
-        for index, slots in enumerate(permutations(nodes, qc.num_qubits)):
-            if index >= self._max_layouts:
-                break
+        # Each process imports Qiskit, so use multiprocessing only when there is
+        # enough gate evaluation work to amortize process startup and IPC.
+        estimated_work = candidate_count * max(1, len(qc.data))
+        if (
+            self._workers > 1
+            and candidate_count >= 4 * self._workers
+            and estimated_work >= _MIN_LAYOUT_WORK_PER_WORKER * self._workers
+        ):
+            return self._find_initial_layout_parallel(
+                qc,
+                nodes,
+                logical_qubits,
+                candidate_count,
+            )
+
+        for index, slots in enumerate(
+            islice(permutations(nodes, qc.num_qubits), candidate_count)
+        ):
             layout = dict(zip(logical_qubits, slots))
             cost = self._route(qc, layout, record_steps=False).pulse_count
             if cost < best_cost:
@@ -116,6 +145,44 @@ class PulseCountOptimizer:
                 best_layout = layout
 
         return best_layout
+
+    def _find_initial_layout_parallel(
+        self,
+        qc: QuantumCircuit,
+        nodes: list[int],
+        logical_qubits: list[int],
+        candidate_count: int,
+    ) -> dict[int, int]:
+        batch_size = max(
+            1,
+            min(256, ceil(candidate_count / (self._workers * 8))),
+        )
+        batches = _layout_batches(
+            nodes,
+            len(logical_qubits),
+            candidate_count,
+            batch_size,
+        )
+        with ProcessPoolExecutor(
+            max_workers=self._workers,
+            initializer=_initialize_layout_worker,
+            initargs=(
+                self._encoded_topology,
+                self._pulse_costs,
+                self._gate_fidelities,
+                self._error_scale,
+                qc,
+                tuple(logical_qubits),
+            ),
+        ) as executor:
+            best_cost, best_index, best_slots = min(
+                executor.map(_evaluate_layout_batch, batches),
+                key=lambda item: (item[0], item[1]),
+            )
+
+        if best_cost == inf:
+            raise RuntimeError("parallel layout search evaluated no candidates.")
+        return dict(zip(logical_qubits, best_slots))
 
     def _route(
         self,
@@ -281,3 +348,70 @@ class PulseCountOptimizer:
         if record_steps:
             steps.append(PulseStep("move_to_empty", (a,), (self._slot_dots(slot_a), self._slot_dots(empty_slot)), cost, len(steps)))
         return cost
+
+
+_LAYOUT_WORKER_OPTIMIZER: PulseCountOptimizer | None = None
+_LAYOUT_WORKER_CIRCUIT: QuantumCircuit | None = None
+_LAYOUT_WORKER_QUBITS: tuple[int, ...] = ()
+
+
+def _initialize_layout_worker(
+    topology: EncodedTopology,
+    pulse_costs: dict[str, int],
+    gate_fidelities: dict[str, float],
+    error_scale: int,
+    qc: QuantumCircuit,
+    logical_qubits: tuple[int, ...],
+) -> None:
+    global _LAYOUT_WORKER_OPTIMIZER
+    global _LAYOUT_WORKER_CIRCUIT
+    global _LAYOUT_WORKER_QUBITS
+
+    _LAYOUT_WORKER_OPTIMIZER = PulseCountOptimizer(
+        topology,
+        pulse_costs=pulse_costs,
+        gate_fidelities=gate_fidelities,
+        error_scale=error_scale,
+        max_layouts=1,
+        workers=1,
+    )
+    _LAYOUT_WORKER_CIRCUIT = qc
+    _LAYOUT_WORKER_QUBITS = logical_qubits
+
+
+def _evaluate_layout_batch(
+    batch: tuple[tuple[int, tuple[int, ...]], ...],
+) -> tuple[float, int, tuple[int, ...]]:
+    optimizer = _LAYOUT_WORKER_OPTIMIZER
+    qc = _LAYOUT_WORKER_CIRCUIT
+    if optimizer is None or qc is None:
+        raise RuntimeError("parallel layout worker was not initialized.")
+
+    best_cost = inf
+    best_index = -1
+    best_slots: tuple[int, ...] = ()
+    for index, slots in batch:
+        layout = dict(zip(_LAYOUT_WORKER_QUBITS, slots))
+        cost = optimizer._route(qc, layout, record_steps=False).pulse_count
+        if cost < best_cost:
+            best_cost = cost
+            best_index = index
+            best_slots = slots
+    return best_cost, best_index, best_slots
+
+
+def _layout_batches(
+    nodes: list[int],
+    logical_qubit_count: int,
+    candidate_count: int,
+    batch_size: int,
+) -> list[tuple[tuple[int, tuple[int, ...]], ...]]:
+    indexed_layouts = enumerate(
+        islice(permutations(nodes, logical_qubit_count), candidate_count)
+    )
+    batches: list[tuple[tuple[int, tuple[int, ...]], ...]] = []
+    while True:
+        batch = tuple(islice(indexed_layouts, batch_size))
+        if not batch:
+            return batches
+        batches.append(batch)

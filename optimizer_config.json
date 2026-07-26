@@ -1,0 +1,12 @@
+{
+  "workers": {
+    "heuristic": "auto",
+    "large-heuristic": 1,
+    "cp-sat": "auto",
+    "window-cp-sat": "auto"
+  },
+  "auto": {
+    "max_workers": 8,
+    "reserve_logical_cpus": 1
+  }
+}

@@ -285,7 +285,10 @@ class CpSatPulseOptimizer:
         if self._time_limit_seconds is not None:
             solver.parameters.max_time_in_seconds = self._time_limit_seconds
         if self._num_search_workers is not None:
-            solver.parameters.num_search_workers = self._num_search_workers
+            if hasattr(solver.parameters, "num_workers"):
+                solver.parameters.num_workers = self._num_search_workers
+            else:  # Compatibility with older OR-Tools releases.
+                solver.parameters.num_search_workers = self._num_search_workers
         status = solver.Solve(model)
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             raise ValueError(f"CP-SAT found no solution within {layers} layers. Try increasing --sat-layers.")

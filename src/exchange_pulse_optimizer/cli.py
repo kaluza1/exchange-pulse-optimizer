@@ -4,24 +4,49 @@ import argparse
 import json
 from pathlib import Path
 import time
+from typing import Sequence
 
 from .costs import DEFAULT_GATE_FIDELITIES, ONE_QUBIT_GATES
 from .cpsat_optimizer import CpSatPulseOptimizer
 from .large_heuristic import LargeHeuristicOptimizer
 from .layout import interaction_weighted_layout
 from .optimizer import PulseCountOptimizer
-from .plotting import plot_topology
 from .qasm import read_openqasm, transpile_to_supported_gates
 from .topology import read_topology_json
 from .windowed_cpsat import WindowedCpSatOptimizer
+from .worker_config import (
+    available_cpu_count,
+    load_worker_config,
+    parse_worker_setting,
+    resolve_worker_count,
+)
 
 
-def main() -> None:
+def _worker_setting(value: str) -> int | str:
+    try:
+        return parse_worker_setting(value, "worker argument")
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Optimize initial layout and encoded-SWAP routing for exchange-only pulse count.",
     )
     parser.add_argument("qasm", help="OpenQASM 2.0 input file")
     parser.add_argument("topology", help="Topology JSON file")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="JSON file containing per-solver worker settings.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=_worker_setting,
+        default=None,
+        metavar="N|auto|all",
+        help="Worker count for the selected solver. Overrides the config file.",
+    )
     parser.add_argument("--cx-cost", type=int, default=28)
     parser.add_argument("--cxswap-cost", type=int, default=31)
     parser.add_argument("--cz-cost", type=int, default=26)
@@ -53,7 +78,13 @@ def main() -> None:
     parser.add_argument("--solver", choices=("heuristic", "large-heuristic", "cp-sat", "window-cp-sat"), default="heuristic")
     parser.add_argument("--sat-layers", type=int, default=None, help="Maximum macro layers for CP-SAT mode")
     parser.add_argument("--time-limit", type=float, default=30.0, help="CP-SAT time limit in seconds")
-    parser.add_argument("--cp-sat-workers", type=int, default=None, help="Number of OR-Tools CP-SAT search workers. Defaults to OR-Tools automatic setting.")
+    parser.add_argument(
+        "--cp-sat-workers",
+        type=_worker_setting,
+        default=None,
+        metavar="N|auto|all",
+        help="Deprecated alias for --workers in CP-SAT modes.",
+    )
     parser.add_argument("--makespan-weight", type=int, default=1000, help="CP-SAT objective weight for schedule_duration. Use 0 to disable.")
     parser.add_argument("--swap-weight", type=int, default=10, help="CP-SAT objective weight for inserted encoded_swap count. Use 0 to disable.")
     parser.add_argument("--error-weight", type=int, default=1, help="CP-SAT objective weight for total_error_cost. Use 0 to disable.")
@@ -84,13 +115,40 @@ def main() -> None:
         help="Skip the initial Qiskit decomposition pass and require the input QASM to use supported gates.",
     )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    if args.workers is not None and args.cp_sat_workers is not None:
+        parser.error("--workers and --cp-sat-workers cannot be used together.")
+    if (
+        args.cp_sat_workers is not None
+        and args.solver not in {"cp-sat", "window-cp-sat"}
+    ):
+        parser.error("--cp-sat-workers is valid only for CP-SAT solver modes.")
+    try:
+        worker_config = load_worker_config(args.config)
+        requested_workers = (
+            args.workers
+            if args.workers is not None
+            else args.cp_sat_workers
+            if args.cp_sat_workers is not None
+            else worker_config.setting_for(args.solver)
+        )
+        available_workers = available_cpu_count()
+        resolved_workers = resolve_worker_count(
+            requested_workers,
+            worker_config.auto,
+            available_cpus=available_workers,
+        )
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
 
     qc = read_openqasm(args.qasm)
     if not args.no_qiskit_transpile:
         qc = transpile_to_supported_gates(qc, optimization_level=args.qiskit_optimization_level)
     topology = read_topology_json(args.topology)
     if args.plot_topology:
+        from .plotting import plot_topology
+
         plot_topology(topology, args.plot_topology, show_encoded_edges=not args.no_encoded_edges)
 
     pulse_costs = {
@@ -126,7 +184,7 @@ def main() -> None:
             error_weight=args.error_weight,
             error_scale=args.error_scale,
             initial_layout=fixed_initial_layout,
-            num_search_workers=args.cp_sat_workers,
+            num_search_workers=resolved_workers,
         )
     elif args.solver == "window-cp-sat":
         optimizer = WindowedCpSatOptimizer(
@@ -142,7 +200,7 @@ def main() -> None:
             error_weight=args.error_weight,
             layout_decay=args.layout_decay,
             layout_local_search_rounds=args.layout_local_search_rounds,
-            num_search_workers=args.cp_sat_workers,
+            num_search_workers=resolved_workers,
         )
     elif args.solver == "large-heuristic":
         optimizer = LargeHeuristicOptimizer(
@@ -156,6 +214,7 @@ def main() -> None:
             lookahead_gates=args.large_lookahead_gates,
             path_candidates=args.large_path_candidates,
             use_cxswap=not args.no_large_cxswap,
+            workers=resolved_workers,
         )
     else:
         optimizer = PulseCountOptimizer(
@@ -167,6 +226,7 @@ def main() -> None:
             layout_strategy=args.layout_strategy,
             layout_decay=args.layout_decay,
             layout_local_search_rounds=args.layout_local_search_rounds,
+            workers=resolved_workers,
         )
     start_time = time.perf_counter()
     plan = optimizer.optimize(qc)
@@ -184,6 +244,11 @@ def main() -> None:
                 "total_error_cost": plan.total_error_cost,
                 "elapsed_seconds": plan.elapsed_seconds,
                 "solver_status": plan.solver_status,
+                "workers": {
+                    "requested": requested_workers,
+                    "resolved": resolved_workers,
+                    "available_logical_cpus": available_workers,
+                },
                 "steps": [
                     {
                         "name": step.name,
@@ -219,6 +284,10 @@ def main() -> None:
         lines.append(f"total_error_cost = {plan.total_error_cost}")
     if plan.elapsed_seconds is not None:
         lines.append(f"elapsed_seconds = {plan.elapsed_seconds:.3f}")
+    lines.append(
+        f"workers = {resolved_workers} "
+        f"(requested={requested_workers}, available={available_workers})"
+    )
     lines.append(f"final_layout = {plan.final_layout}")
     if plan.solver_status is not None:
         lines.append(f"solver_status = {plan.solver_status}")

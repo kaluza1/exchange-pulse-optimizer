@@ -16,8 +16,16 @@ dependencies = [
     "qiskit",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+]
+
 [project.scripts]
 exchange-pulse-opt = "exchange_pulse_optimizer.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

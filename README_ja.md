@@ -71,7 +71,10 @@ src/exchange_pulse_optimizer/
   topology.py         # encoded topologyモデルとJSON検証
   layout.py           # 初期配置heuristic
   optimizer.py        # heuristic routing optimizer と pulse plan型
+  large_heuristic.py  # 大規模回路向けfront-layer routing heuristic
   cpsat_optimizer.py  # CP-SAT routing, scheduling, cxswap, swap対応
+  windowed_cpsat.py   # window分割 routing CP-SAT
+  worker_config.py    # solver別worker設定とauto解決
   cli.py              # コマンドライン入口
   plotting.py         # トポロジー描画
 ```
@@ -102,6 +105,45 @@ JSON出力:
 ```powershell
 exchange-pulse-opt examples\sample.qasm examples\line3_topology.json --json
 ```
+
+選択したsolverで使うCPU worker数を指定:
+
+```powershell
+exchange-pulse-opt examples\sample.qasm examples\line3_topology.json --workers 4
+```
+
+solverごとのworker数はJSON設定ファイルにも記述できます。リポジトリ直下の
+`optimizer_config.json` を編集して使えます。
+
+```powershell
+exchange-pulse-opt examples\sample.qasm examples\line3_topology.json --config optimizer_config.json
+```
+
+```json
+{
+  "workers": {
+    "heuristic": "auto",
+    "large-heuristic": 1,
+    "cp-sat": "auto",
+    "window-cp-sat": "auto"
+  },
+  "auto": {
+    "max_workers": 8,
+    "reserve_logical_cpus": 1
+  }
+}
+```
+
+`--workers` は、選択中のsolverに対する設定ファイルの値を上書きします。
+正の整数はそのworker数、`all` は利用可能な全論理CPU、`auto` はOS用に
+`auto.reserve_logical_cpus` 個を残しつつ最大 `auto.max_workers` 個を使います。
+`--config` と `--workers` の両方を省略した場合も、上記と同じ組み込み設定を
+使います。したがって24論理CPUの環境では、`auto` は8 workerになります。
+
+`large-heuristic` はrouting判断の逐次依存が強く、小・中規模ではプロセス間通信の
+方が重くなりやすいため、デフォルトを1 workerにしています。再現性を重視した
+単一workerの基準測定にも `--workers 1` を使えます。このworker設定が対象とする
+のはoptimizer本体であり、単一回路に対するQiskitの事前変換は並列化しません。
 
 トポロジー図を保存:
 
@@ -146,7 +188,7 @@ exchange-pulse-opt examples\sample_4x4_interaction_20q.qasm examples\grid4x4_top
 7x7正方格子で、49論理qubit・50個の2量子ビットゲートを含む例:
 
 ```powershell
-exchange-pulse-opt examples\sample_49q_50x2q_scattered_gridlocal.qasm examples\grid7x7_topology.json --solver window-cp-sat --window-size 2 --window-sat-layers 4 --time-limit 60 --cp-sat-workers 1 --output-dir output --no-qiskit-transpile
+exchange-pulse-opt examples\sample_49q_50x2q_scattered_gridlocal.qasm examples\grid7x7_topology.json --solver window-cp-sat --window-size 2 --window-sat-layers 4 --time-limit 60 --workers 1 --output-dir output --no-qiskit-transpile
 ```
 
 この例では、各windowが `OPTIMAL` で解け、出力は
@@ -176,14 +218,27 @@ topology
   物理dot graphと encoded_qubits を書いたJSONファイルです。
 ```
 
-実行モード:
+実行モードとworker設定:
 
 ```text
---solver heuristic|cp-sat
+--solver heuristic|large-heuristic|cp-sat|window-cp-sat
   最適化方法を選びます。
-  heuristic: 逐次的なrouting heuristicを使います。
-  cp-sat   : CP-SATでrouting, layer, 同時実行などを最適化します。
+  heuristic       : shortest-path routing heuristicを使います。
+  large-heuristic : front-layer/lookahead routingとgreedy並列scheduleを使います。
+  cp-sat          : CP-SATでrouting, layer, 同時実行などを最適化します。
+  window-cp-sat   : 初期配置を固定し、window単位でrouting CP-SATを実行します。
   デフォルト: heuristic
+
+--config PATH
+  solverごとのworker設定とauto方針を記述したJSONファイルです。
+  このオプションを省略した場合、ファイルは暗黙には読み込まず、組み込み設定を使います。
+
+--workers N|auto|all
+  選択中のsolverで使うworker数です。--configの値より優先されます。
+  heuristic       : 規模が十分大きい場合、exhaustive初期配置候補をプロセス並列評価します。
+  large-heuristic : 候補が十分ある場合、routing候補のscore計算をプロセス並列化します。
+  cp-sat          : OR-Tools CP-SAT内部の探索thread数に渡します。
+  window-cp-sat   : 各windowのCP-SAT内部の探索thread数に渡します。
 
 --layout-strategy exhaustive|interaction
   初期配置の決め方を選びます。
@@ -205,9 +260,9 @@ CP-SAT関連:
   routing CP-SAT本体の時間制限です。
   デフォルト: 30
 
---cp-sat-workers N
-  OR-Tools CP-SATの探索worker数です。solverが使うCPUコア数を選びたい場合に指定します。
-  未指定の場合はOR-Toolsの自動設定を使います。
+--cp-sat-workers N|auto|all
+  CP-SAT系モードにおける --workers の旧互換aliasです。
+  新しい実行では --workers を推奨します。
 ```
 
 初期配置heuristic関連:
@@ -352,8 +407,11 @@ exchange-pulse-opt examples\sample_4x4_interaction_20q.qasm examples\grid4x4_top
   各windowのrouting CP-SATで使う最大macro layer数です。
   未指定の場合はwindowサイズとencoded slot数から概算します。
 
---cp-sat-workers N
+--workers N|auto|all
   各window内のCP-SAT探索で使うworker数です。window同士は順番に解きます。
+
+--cp-sat-workers N|auto|all
+  上記 --workers の旧互換aliasです。
 ```
 
 このモードは、全体CP-SATより軽く、large-heuristicより局所的に強い解を狙うための中間モードです。領域分割やKernighan-Lin風の分割は、今後このwindow分割の上に追加できます。

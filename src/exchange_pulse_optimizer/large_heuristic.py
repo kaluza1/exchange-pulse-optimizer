@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
 from itertools import islice
+from math import ceil
 from typing import Any
 
 import networkx as nx
@@ -48,6 +50,7 @@ class LargeHeuristicOptimizer:
         lookahead_gates: int = 32,
         path_candidates: int = 3,
         use_cxswap: bool = True,
+        workers: int = 1,
     ) -> None:
         if topology.physical_graph.number_of_nodes() == 0:
             raise ValueError("physical topology must have at least one dot.")
@@ -70,10 +73,34 @@ class LargeHeuristicOptimizer:
         self._lookahead_gates = max(0, lookahead_gates)
         self._path_candidates = max(1, path_candidates)
         self._use_cxswap = use_cxswap
+        if workers < 1:
+            raise ValueError("workers must be positive.")
+        self._workers = workers
         self._distances = dict(nx.all_pairs_shortest_path_length(self._topology))
+        slot_count = self._topology.number_of_nodes()
+        self._distance_matrix = tuple(
+            tuple(self._distances[left][right] for right in range(slot_count))
+            for left in range(slot_count)
+        )
         self._gates_for_lookahead: list[_Gate] = []
+        self._score_executor: ProcessPoolExecutor | None = None
 
     def optimize(self, qc: QuantumCircuit) -> PulsePlan:
+        if self._workers == 1:
+            return self._optimize(qc)
+
+        with ProcessPoolExecutor(
+            max_workers=self._workers,
+            initializer=_initialize_large_score_worker,
+            initargs=(self._distance_matrix,),
+        ) as executor:
+            self._score_executor = executor
+            try:
+                return self._optimize(qc)
+            finally:
+                self._score_executor = None
+
+    def _optimize(self, qc: QuantumCircuit) -> PulsePlan:
         if qc.num_qubits > self._encoded_topology.num_encoded_slots:
             required_dots = 3 * qc.num_qubits
             available_groups = self._encoded_topology.num_encoded_slots
@@ -283,10 +310,60 @@ class LargeHeuristicOptimizer:
             return None
 
         future = self._lookahead_two_qubit_gates(gates, done, front)
+        if self._score_executor is not None and len(candidates) >= 4:
+            return self._parallel_best_routing_swap(
+                candidates,
+                front,
+                future,
+                layout,
+                occupant,
+            )
         return min(
             candidates,
             key=lambda candidate: self._swap_score(candidate, front, future, layout, occupant),
         )
+
+    def _parallel_best_routing_swap(
+        self,
+        candidates: list[tuple[int, int]],
+        front: list[_Gate],
+        future: list[_Gate],
+        layout: dict[int, int],
+        occupant: dict[Any, int | None],
+    ) -> tuple[int, int]:
+        executor = self._score_executor
+        if executor is None:
+            raise RuntimeError("large-heuristic score executor is unavailable.")
+
+        worker_count = min(self._workers, len(candidates))
+        chunk_size = ceil(len(candidates) / worker_count)
+        chunks = [
+            tuple(candidates[start : start + chunk_size])
+            for start in range(0, len(candidates), chunk_size)
+        ]
+        layout_slots = tuple(layout[qid] for qid in range(len(layout)))
+        occupants = tuple(
+            occupant[slot] for slot in range(self._topology.number_of_nodes())
+        )
+        front_pairs = tuple(gate.qids for gate in front)
+        future_pairs = tuple(gate.qids for gate in future)
+        tasks = [
+            (
+                chunk,
+                front_pairs,
+                future_pairs,
+                layout_slots,
+                occupants,
+                self._pulse_costs["swap"],
+            )
+            for chunk in chunks
+        ]
+        scored = [
+            item
+            for chunk_result in executor.map(_score_swap_chunk, tasks)
+            for item in chunk_result
+        ]
+        return min(scored, key=lambda item: item[1])[0]
 
     def _routing_candidates(
         self,
@@ -478,3 +555,109 @@ class LargeHeuristicOptimizer:
 
     def _slot_dots(self, slot: int) -> tuple[Any, ...]:
         return self._encoded_topology.dot_groups[slot]
+
+
+_LARGE_DISTANCE_MATRIX: tuple[tuple[int, ...], ...] = ()
+
+
+def _initialize_large_score_worker(
+    distance_matrix: tuple[tuple[int, ...], ...],
+) -> None:
+    global _LARGE_DISTANCE_MATRIX
+    _LARGE_DISTANCE_MATRIX = distance_matrix
+
+
+def _score_swap_chunk(
+    task: tuple[
+        tuple[tuple[int, int], ...],
+        tuple[tuple[int, ...], ...],
+        tuple[tuple[int, ...], ...],
+        tuple[int, ...],
+        tuple[int | None, ...],
+        int,
+    ],
+) -> list[tuple[tuple[int, int], tuple[float, int, tuple[int, int]]]]:
+    (
+        candidates,
+        front_pairs,
+        future_pairs,
+        layout,
+        occupants,
+        swap_cost,
+    ) = task
+    if not _LARGE_DISTANCE_MATRIX:
+        raise RuntimeError("large-heuristic score worker was not initialized.")
+
+    results = []
+    for candidate in candidates:
+        left, right = candidate
+        left_qubit = occupants[left]
+        right_qubit = occupants[right]
+        front_score = _parallel_distance_score(
+            front_pairs,
+            layout,
+            left,
+            right,
+            left_qubit,
+            right_qubit,
+            1.0,
+        )
+        future_score = _parallel_distance_score(
+            future_pairs,
+            layout,
+            left,
+            right,
+            left_qubit,
+            right_qubit,
+            0.35,
+        )
+        results.append(
+            (
+                candidate,
+                (front_score + future_score, swap_cost, candidate),
+            )
+        )
+    return results
+
+
+def _parallel_distance_score(
+    gate_pairs: tuple[tuple[int, ...], ...],
+    layout: tuple[int, ...],
+    left: int,
+    right: int,
+    left_qubit: int | None,
+    right_qubit: int | None,
+    weight: float,
+) -> float:
+    score = 0.0
+    for offset, qids in enumerate(gate_pairs):
+        if len(qids) != 2:
+            continue
+        a, b = qids
+        slot_a = _slot_after_candidate_swap(
+            a, layout, left, right, left_qubit, right_qubit
+        )
+        slot_b = _slot_after_candidate_swap(
+            b, layout, left, right, left_qubit, right_qubit
+        )
+        score += (
+            weight
+            * (0.98**offset)
+            * max(0, _LARGE_DISTANCE_MATRIX[slot_a][slot_b] - 1)
+        )
+    return score
+
+
+def _slot_after_candidate_swap(
+    qubit: int,
+    layout: tuple[int, ...],
+    left: int,
+    right: int,
+    left_qubit: int | None,
+    right_qubit: int | None,
+) -> int:
+    if qubit == left_qubit:
+        return right
+    if qubit == right_qubit:
+        return left
+    return layout[qubit]
