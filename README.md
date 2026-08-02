@@ -38,13 +38,14 @@ These values are approximate **pulse counts** for each macro operation. They are
 cx     : 28
 cxswap : 31
 cz     : 26
+czswap : 41
 swap   : 15
 h/x    : 3
 rz/z   : 1
-measure : 0
+measure/reset : 0
 ```
 
-The `cx=28`, `cxswap=31`, `cz=26`, and `swap=15` defaults are macro-level pulse-count approximations. The two-qubit pulse counts are based on the exchange-only pulse-sequence results discussed in Chadwick et al., "Short two-qubit pulse sequences for exchange-only spin qubits in 2D layouts" (arXiv:2412.14918). They can be changed from the CLI.
+The `cx=28`, `cxswap=31`, `cz=26`, and `swap=15` defaults are macro-level pulse-count approximations. The two-qubit pulse counts are based on the exchange-only pulse-sequence results discussed in Chadwick et al., "Short two-qubit pulse sequences for exchange-only spin qubits in 2D layouts" (arXiv:2412.14918). No calibrated fused CZSWAP value is available in that model, so large-heuristic mode conservatively defaults to the sequential composition `czswap=cz+swap=41`. All values can be changed from the CLI.
 
 ## Fidelity/Error Model
 
@@ -61,6 +62,7 @@ For example, if the output plan contains `h`, `cx`, `encoded_swap`, and `cz`, th
 cx       : 0.9755
 cz       : 0.9589
 cxswap   : 0.9738
+czswap   : 0.94959867
 swap     : 0.9903
 ```
 
@@ -73,9 +75,10 @@ cx error     = 1 - 0.9755 = 0.0245
 swap error   = 1 - 0.9903 = 0.0097
 cz error     = 0.0245 * (0.062 / 0.037) ~= 0.0411
 cxswap error = 0.0245 * 1.07 ~= 0.0262
+czswap fidelity = F(cz) * F(swap) = 0.9589 * 0.9903 = 0.94959867
 ```
 
-`cz` is a linear estimate using the LCCZ/CNOT error ratio from Weinstein et al. (Nature, 2023). `cxswap` uses the approximation that CXSWAP has 1.07 times the CX error, based on the average pulse-length overhead reported by Chadwick et al., Physical Review A 111, 052616 (2025). Routing `encoded_swap` operations use the `swap` fidelity.
+`cz` is a linear estimate using the LCCZ/CNOT error ratio from Weinstein et al. (Nature, 2023). `cxswap` uses the approximation that CXSWAP has 1.07 times the CX error, based on the average pulse-length overhead reported by Chadwick et al., Physical Review A 111, 052616 (2025). The CZSWAP default is not a calibrated fused-gate estimate; it is the conservative independent composition of the existing CZ and SWAP defaults and can be overridden. Routing `encoded_swap` operations use the `swap` fidelity.
 
 For CP-SAT, the corresponding integer `total_error_cost` is included in the objective by default:
 
@@ -88,6 +91,9 @@ The reported `estimated_fidelity` is still the product of operation fidelities.
 ## Qiskit Input Decomposition
 
 Before optimization, the OpenQASM input is decomposed by Qiskit's `transpile` into the gate set supported by this tool. Input gates such as `u`, `u3`, and `ccx` are normally converted into `cx`, `cz`, `swap`, `h`, `x`, `y`, `z`, `s`, `sdg`, `t`, `tdg`, `rx`, `ry`, and `rz`.
+
+Non-unitary `measure` and `reset` instructions and scheduling `barrier`
+instructions are retained by large-heuristic mode.
 
 This Qiskit decomposition pass is enabled by default. `--qiskit-optimization-level` controls how much Qiskit tries to simplify the circuit while decomposing it:
 
@@ -364,7 +370,9 @@ Large-heuristic options:
   Default: 24
 
 --large-lookahead-gates N
-  Number of future two-qubit gates used when scoring swap/cxswap candidates.
+  Number of global future two-qubit gates used when scoring routing-SWAP
+  candidates. Automatic CXSWAP/CZSWAP selection instead examines up to 32
+  future two-qubit gates touching each of the two participating qubits.
   Default: 32
 
 --large-path-candidates N
@@ -377,6 +385,17 @@ Large-heuristic options:
 
 --no-large-cxswap
   Disables automatic CXSWAP selection for input CX gates.
+
+--large-czswap
+  Enables automatic CZSWAP selection for input CZ gates. Disabled by default
+  so existing large-heuristic results remain unchanged.
+
+--large-fusion-objective distance|weighted
+  Selects the automatic CXSWAP/CZSWAP objective.
+  `distance` preserves the legacy distance-first policy.
+  `weighted` charges the configured fused-operation cost and values future
+  distance reduction in configured SWAP-cost units.
+  Default: distance
 ```
 
 Initial-layout heuristic options:
@@ -424,8 +443,17 @@ Macro pulse costs:
 --cz-cost N
   Macro pulse cost for cz. Default: 26
 
+--czswap-cost N
+  Macro pulse cost for czswap in large-heuristic mode. Default: 41
+
 --swap-cost N
   Macro pulse cost for encoded swap / input swap. Default: 15
+
+--measure-cost N
+  Macro duration/cost for measurement. Default: 0
+
+--reset-cost N
+  Macro duration/cost for reset. Default: 0
 ```
 
 Gate fidelity estimates:
@@ -442,6 +470,9 @@ Gate fidelity estimates:
 
 --cz-fidelity F
   Fidelity used for cz. Default: 0.9589
+
+--czswap-fidelity F
+  Fidelity used for czswap in large-heuristic mode. Default: 0.94959867
 
 --swap-fidelity F
   Fidelity used for encoded swap / input swap. Default: 0.9903
@@ -535,6 +566,13 @@ There are three practical CP-SAT-style optimization modes:
    window as its fixed initial layout.
 ```
 
+CP-SAT considers mapping-updating CXSWAP and CZSWAP executions for input CX
+and CZ gates. To minimize only standalone routing SWAPs when all two-qubit
+macros have equal cost, set `CX=CZ=SWAP=CXSWAP=CZSWAP=1` and use
+`--makespan-weight 0 --swap-weight 1 --error-weight 0`. This objective is exact
+within a selected window and layer horizon; sequential windowing does not
+provide a global optimum certificate for the full circuit.
+
 ## Large-Heuristic Mode
 
 `--solver large-heuristic` is a scalable heuristic mode for larger benchmark circuits, such as hundreds of logical qubits and hundreds of random gates. It does not prove optimality.
@@ -545,10 +583,47 @@ It performs:
 - front-layer gate selection,
 - lookahead scoring of future two-qubit gates,
 - multiple shortest-path candidate checks,
-- encoded-SWAP and CXSWAP candidate comparison,
+- encoded-SWAP, CXSWAP, and optional CZSWAP candidate comparison,
 - and greedy parallel layer scheduling.
 
-The score is heuristic, not a global objective. It favors routing moves that reduce front-layer and lookahead distances, while still accounting for macro-operation costs. The reported `schedule_duration` is computed after greedy parallel packing, so it can be much smaller than `total_pulses`.
+The score is heuristic, not a global objective. Routing-SWAP candidates use the configurable global lookahead window. Automatic CXSWAP/CZSWAP selection separately examines up to 32 unfinished future two-qubit gates touching each participating qubit, so unrelated gates between two uses of the same token do not hide that future use.
+
+The default `fusion_objective="distance"` preserves the legacy distance-first policy. Its fused candidate secondary cost is normalized to the original CX/CZ cost, so any strict per-token future-distance improvement selects fusion and an equal-distance tie keeps the direct gate.
+
+For cost-aware proactive routing, `fusion_objective="weighted"` compares every adjacent direct/fused candidate in one configured macro-cost unit:
+
+```text
+fusion_score =
+    operation_cost
+    + swap_cost * per_token_future_distance_score
+```
+
+The future-distance score uses the same `0.98^offset` decay as the router. Thus a configured direct cost of 1 and fused cost of 2 incurs the real extra cost of 1: a small distance improvement that does not recover it keeps the direct gate, while enough cumulative future improvement selects fusion. Exact score ties keep the direct candidate. In both policies, the emitted plan uses the configured fused-operation cost.
+
+The reported `schedule_duration` is computed after greedy parallel packing, so it can be much smaller than `total_pulses`. Packing preserves the emitted predecessor order independently for every logical qubit and physical encoded slot.
+
+Python callers may bypass interaction-weighted placement by passing
+`initial_layout={logical_qubit: slot, ...}` to `LargeHeuristicOptimizer`.
+The mapping must cover every circuit qubit exactly once, use valid unique
+slots, and may leave additional topology slots unused. This is useful for
+repeated routing runs: `PulsePlan.final_slot_layout` is the slot-number mapping
+accepted directly as the next optimizer's `initial_layout`. The existing
+`initial_layout` and `final_layout` fields retain their dot-group representation.
+
+Large-heuristic `PulseStep` records `source_gate_index`, the exact index in
+`QuantumCircuit.data`, and `source_label`, the Qiskit instruction label.
+Direct/fused gates, measurements, resets, logical input swaps, and barriers
+carry their own source index. An inserted routing SWAP carries the deterministic
+first front-layer gate index that caused its routing epoch. A wrapper can
+therefore join cycle/tick metadata by source index without copying arbitrary
+metadata into the optimizer.
+
+Measurement and reset are mapping-preserving one-token operations with
+configurable macro costs. A barrier is emitted as a zero-cost trace step.
+During greedy scheduling, every barrier advances a global layer floor: the
+barrier is placed after every previously emitted operation, and every later
+operation is placed in a subsequent layer. Logical and physical resource order
+is still preserved within each barrier-delimited tick.
 
 ## Initial-Layout Objective
 

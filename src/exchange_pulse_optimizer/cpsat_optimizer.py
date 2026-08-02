@@ -6,6 +6,8 @@ from typing import Any
 from qiskit import QuantumCircuit
 
 from .costs import (
+    DEFAULT_CZSWAP_FIDELITY,
+    DEFAULT_CZSWAP_PULSE_COST,
     DEFAULT_GATE_FIDELITIES,
     DEFAULT_PULSE_COSTS,
     estimate_operation_fidelity,
@@ -17,8 +19,10 @@ from .topology import EncodedTopology
 
 try:
     from ortools.sat.python import cp_model
-except ModuleNotFoundError:  # pragma: no cover
+    _CP_SAT_IMPORT_ERROR: Exception | None = None
+except (ModuleNotFoundError, OSError) as exc:  # pragma: no cover
     cp_model = None
+    _CP_SAT_IMPORT_ERROR = exc
 
 
 @dataclass(frozen=True)
@@ -27,6 +31,15 @@ class _Gate:
     name: str
     qubits: tuple[int, ...]
     cost: int
+
+
+_FUSED_SWAP_GATE_NAMES = {
+    "cx": "cxswap",
+    "cxswap": "cxswap",
+    "cz": "czswap",
+    "czswap": "czswap",
+}
+_OPTIONAL_FUSED_SWAP_GATE_NAMES = frozenset(("cx", "cz"))
 
 
 def _commutes_for_ordering(left: _Gate, right: _Gate) -> bool:
@@ -56,7 +69,11 @@ class CpSatPulseOptimizer:
         num_search_workers: int | None = None,
     ) -> None:
         if cp_model is None:
-            raise ModuleNotFoundError("ortools is required for CP-SAT mode. Install with: py -m pip install ortools")
+            raise ModuleNotFoundError(
+                "a loadable OR-Tools installation is required for CP-SAT "
+                "mode. Install OR-Tools or allow its native library under "
+                "the host application-control policy."
+            ) from _CP_SAT_IMPORT_ERROR
         if topology.num_encoded_slots == 0:
             raise ValueError("encoded layout must have at least one 3-dot group.")
 
@@ -64,8 +81,16 @@ class CpSatPulseOptimizer:
         self._slot_graph = topology.to_slot_graph()
         self._slots = list(self._slot_graph.nodes)
         self._edges = [tuple(edge) for edge in self._slot_graph.edges]
-        self._pulse_costs = DEFAULT_PULSE_COSTS | (pulse_costs or {})
-        self._gate_fidelities = DEFAULT_GATE_FIDELITIES | (gate_fidelities or {})
+        self._pulse_costs = (
+            DEFAULT_PULSE_COSTS
+            | {"czswap": DEFAULT_CZSWAP_PULSE_COST}
+            | (pulse_costs or {})
+        )
+        self._gate_fidelities = (
+            DEFAULT_GATE_FIDELITIES
+            | {"czswap": DEFAULT_CZSWAP_FIDELITY}
+            | (gate_fidelities or {})
+        )
         self._max_layers = max_layers
         self._time_limit_seconds = time_limit_seconds
         self._makespan_weight = makespan_weight
@@ -114,10 +139,10 @@ class CpSatPulseOptimizer:
             for g in gates
             for t in range(layers)
         }
-        cxswap_run = {
-            (g.index, t): model.NewBoolVar(f"cxswap_g{g.index}_t{t}")
+        fused_swap_run = {
+            (g.index, t): model.NewBoolVar(f"fused_swap_g{g.index}_t{t}")
             for g in gates
-            if g.name in ("cx", "cxswap")
+            if g.name in _FUSED_SWAP_GATE_NAMES
             for t in range(layers)
         }
         swp = {
@@ -144,10 +169,10 @@ class CpSatPulseOptimizer:
         for g in gates:
             model.AddExactlyOne(run[g.index, t] for t in range(layers))
             for t in range(layers):
-                if g.name == "cx":
-                    model.Add(cxswap_run[g.index, t] <= run[g.index, t])
-                elif g.name == "cxswap":
-                    model.Add(cxswap_run[g.index, t] == run[g.index, t])
+                if g.name in _OPTIONAL_FUSED_SWAP_GATE_NAMES:
+                    model.Add(fused_swap_run[g.index, t] <= run[g.index, t])
+                elif g.name in _FUSED_SWAP_GATE_NAMES:
+                    model.Add(fused_swap_run[g.index, t] == run[g.index, t])
 
         gate_layer = {}
         for g in gates:
@@ -183,18 +208,21 @@ class CpSatPulseOptimizer:
                 for t in range(layers):
                     model.Add(sum(adjacent_pair[g.index, t]) >= run[g.index, t])
 
-        cxswap_pair = self._cxswap_pair_vars(
+        fused_swap_pair = self._fused_swap_pair_vars(
             model,
             occ,
             gates,
             layers,
             edges,
-            cxswap_run,
+            fused_swap_run,
         )
         for g in gates:
-            if g.name in ("cx", "cxswap"):
+            if g.name in _FUSED_SWAP_GATE_NAMES:
                 for t in range(layers):
-                    model.Add(sum(cxswap_pair[g.index, t].values()) == cxswap_run[g.index, t])
+                    model.Add(
+                        sum(fused_swap_pair[g.index, t].values())
+                        == fused_swap_run[g.index, t]
+                    )
 
         logical_swap_pair = self._logical_swap_pair_vars(model, occ, gates, layers, edges, run)
         for g in gates:
@@ -216,10 +244,10 @@ class CpSatPulseOptimizer:
                             incoming.append(move[(t, q, e_idx, a, b)])
 
                     for gate in gates:
-                        if gate.name not in ("cx", "cxswap"):
+                        if gate.name not in _FUSED_SWAP_GATE_NAMES:
                             continue
                         qa, qb = gate.qubits
-                        for (src, dst), var in cxswap_pair[gate.index, t].items():
+                        for (src, dst), var in fused_swap_pair[gate.index, t].items():
                             if q == qa:
                                 if src == s:
                                     outgoing.append(var)
@@ -263,15 +291,31 @@ class CpSatPulseOptimizer:
         for t in range(layers):
             duration = model.NewIntVar(0, max(self._pulse_costs.values()), f"duration_t{t}")
             for g in gates:
-                model.Add(duration >= g.cost).OnlyEnforceIf(run[g.index, t])
-                if g.name in ("cx", "cxswap"):
-                    model.Add(duration >= self._pulse_costs["cxswap"]).OnlyEnforceIf(cxswap_run[g.index, t])
+                if g.name in _OPTIONAL_FUSED_SWAP_GATE_NAMES:
+                    model.Add(duration >= g.cost).OnlyEnforceIf(
+                        [run[g.index, t], fused_swap_run[g.index, t].Not()]
+                    )
+                    fused_name = _FUSED_SWAP_GATE_NAMES[g.name]
+                    model.Add(duration >= self._pulse_costs[fused_name]).OnlyEnforceIf(
+                        fused_swap_run[g.index, t]
+                    )
+                elif g.name in _FUSED_SWAP_GATE_NAMES:
+                    model.Add(duration >= g.cost).OnlyEnforceIf(run[g.index, t])
+                else:
+                    model.Add(duration >= g.cost).OnlyEnforceIf(run[g.index, t])
             for e_idx in range(len(edges)):
                 model.Add(duration >= self._pulse_costs["swap"]).OnlyEnforceIf(swp[e_idx, t])
             layer_duration.append(duration)
 
         swap_count = sum(swp[e_idx, t] for e_idx in range(len(edges)) for t in range(layers))
-        total_error_cost = self._total_error_cost_expr(gates, layers, run, cxswap_run, swp, len(edges))
+        total_error_cost = self._total_error_cost_expr(
+            gates,
+            layers,
+            run,
+            fused_swap_run,
+            swp,
+            len(edges),
+        )
         objective_terms = []
         if self._makespan_weight:
             objective_terms.append(self._makespan_weight * sum(layer_duration))
@@ -303,7 +347,7 @@ class CpSatPulseOptimizer:
             slots,
             edges,
             layer_duration,
-            cxswap_run,
+            fused_swap_run,
             qubits,
             solver.StatusName(status),
         )
@@ -335,20 +379,28 @@ class CpSatPulseOptimizer:
                 deps.append((earlier.index, later.index))
         return deps
 
-    def _total_error_cost_expr(self, gates, layers, run, cxswap_run, swp, num_edges):
+    def _total_error_cost_expr(self, gates, layers, run, fused_swap_run, swp, num_edges):
         terms = []
-        cx_error = operation_error_cost("cx", self._gate_fidelities, self._error_scale)
-        cxswap_error = operation_error_cost("cxswap", self._gate_fidelities, self._error_scale)
         swap_error = operation_error_cost("swap", self._gate_fidelities, self._error_scale)
 
         for gate in gates:
-            if gate.name == "cx":
+            if gate.name in _OPTIONAL_FUSED_SWAP_GATE_NAMES:
+                gate_error = operation_error_cost(
+                    gate.name,
+                    self._gate_fidelities,
+                    self._error_scale,
+                )
+                fused_name = _FUSED_SWAP_GATE_NAMES[gate.name]
+                fused_error = operation_error_cost(
+                    fused_name,
+                    self._gate_fidelities,
+                    self._error_scale,
+                )
                 for t in range(layers):
-                    terms.append(cx_error * run[gate.index, t])
-                    terms.append((cxswap_error - cx_error) * cxswap_run[gate.index, t])
-            elif gate.name == "cxswap":
-                for t in range(layers):
-                    terms.append(cxswap_error * run[gate.index, t])
+                    terms.append(gate_error * run[gate.index, t])
+                    terms.append(
+                        (fused_error - gate_error) * fused_swap_run[gate.index, t]
+                    )
             else:
                 gate_error = operation_error_cost(gate.name, self._gate_fidelities, self._error_scale)
                 for t in range(layers):
@@ -376,29 +428,37 @@ class CpSatPulseOptimizer:
                 adjacent_pair[gate.index, t] = vars_for_gate
         return adjacent_pair
 
-    def _cxswap_pair_vars(self, model, occ, gates, layers, edges, cxswap_run):
-        cxswap_pair = {}
+    def _fused_swap_pair_vars(self, model, occ, gates, layers, edges, fused_swap_run):
+        fused_swap_pair = {}
         directed_edges = edges + [(b, a) for a, b in edges]
         for gate in gates:
-            if gate.name not in ("cx", "cxswap"):
+            if gate.name not in _FUSED_SWAP_GATE_NAMES:
                 continue
             qa, qb = gate.qubits
             for t in range(layers):
                 pair_vars = {}
                 for a, b in directed_edges:
-                    var = model.NewBoolVar(f"cxswap_pair_g{gate.index}_t{t}_s{a}_{b}")
-                    model.AddBoolAnd([cxswap_run[gate.index, t], occ[t, qa, a], occ[t, qb, b]]).OnlyEnforceIf(var)
+                    var = model.NewBoolVar(
+                        f"fused_swap_pair_g{gate.index}_t{t}_s{a}_{b}"
+                    )
+                    model.AddBoolAnd(
+                        [
+                            fused_swap_run[gate.index, t],
+                            occ[t, qa, a],
+                            occ[t, qb, b],
+                        ]
+                    ).OnlyEnforceIf(var)
                     model.AddBoolOr(
                         [
-                            cxswap_run[gate.index, t].Not(),
+                            fused_swap_run[gate.index, t].Not(),
                             occ[t, qa, a].Not(),
                             occ[t, qb, b].Not(),
                             var,
                         ]
                     )
                     pair_vars[(a, b)] = var
-                cxswap_pair[gate.index, t] = pair_vars
-        return cxswap_pair
+                fused_swap_pair[gate.index, t] = pair_vars
+        return fused_swap_pair
 
     def _logical_swap_pair_vars(self, model, occ, gates, layers, edges, run):
         swap_pair = {}
@@ -424,7 +484,21 @@ class CpSatPulseOptimizer:
                 swap_pair[gate.index, t] = pair_vars
         return swap_pair
 
-    def _build_plan(self, solver, occ, run, swp, gates, layers, slots, edges, layer_duration, cxswap_run, qubits, status_name) -> PulsePlan:
+    def _build_plan(
+        self,
+        solver,
+        occ,
+        run,
+        swp,
+        gates,
+        layers,
+        slots,
+        edges,
+        layer_duration,
+        fused_swap_run,
+        qubits,
+        status_name,
+    ) -> PulsePlan:
         initial_slot_layout = self._slot_layout_from_occ(solver, occ, 0, qubits, slots)
         final_slot_layout = self._slot_layout_from_occ(solver, occ, layers, qubits, slots)
         steps: list[PulseStep] = []
@@ -437,9 +511,20 @@ class CpSatPulseOptimizer:
                 continue
             for gate in gates:
                 if solver.Value(run[gate.index, t]):
-                    is_cxswap = gate.name in ("cx", "cxswap") and solver.Value(cxswap_run[gate.index, t])
-                    step_name = "cxswap" if is_cxswap else gate.name
-                    step_cost = self._pulse_costs["cxswap"] if is_cxswap else gate.cost
+                    is_fused_swap = (
+                        gate.name in _FUSED_SWAP_GATE_NAMES
+                        and solver.Value(fused_swap_run[gate.index, t])
+                    )
+                    step_name = (
+                        _FUSED_SWAP_GATE_NAMES[gate.name]
+                        if is_fused_swap
+                        else gate.name
+                    )
+                    step_cost = (
+                        self._pulse_costs[step_name]
+                        if is_fused_swap
+                        else gate.cost
+                    )
                     dot_groups = tuple(self._dots_for_qubit_at(solver, occ, t, q, slots) for q in gate.qubits)
                     steps.append(PulseStep(step_name, gate.qubits, dot_groups, step_cost, compact_layer[t]))
                     pulse_count += step_cost

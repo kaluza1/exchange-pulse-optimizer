@@ -20,6 +20,7 @@ DEFAULT_PULSE_COSTS = {
     "ry": 3,
     "rz": 1,
     "measure": 0,
+    "reset": 0,
     "barrier": 0,
 }
 
@@ -41,11 +42,19 @@ DEFAULT_GATE_FIDELITIES = {
     "cx": 0.9755,
     "cxswap": 0.9738,
     "cz": 0.9589,
+    "czswap": 0.9589 * 0.9903,
     "swap": 0.9903,
     **{gate: 0.9986 for gate in ONE_QUBIT_GATES},
     "measure": 1.0,
+    "reset": 1.0,
     "barrier": 1.0,
 }
+
+# No calibrated fused CZSWAP macro is available in the cited pulse data.
+# Large-heuristic mode therefore uses a conservative sequential CZ + SWAP
+# composition by default.  Callers can override both values.
+DEFAULT_CZSWAP_PULSE_COST = DEFAULT_PULSE_COSTS["cz"] + DEFAULT_PULSE_COSTS["swap"]
+DEFAULT_CZSWAP_FIDELITY = DEFAULT_GATE_FIDELITIES["czswap"]
 
 OPERATION_FIDELITY_ALIASES = {
     "encoded_swap": "swap",

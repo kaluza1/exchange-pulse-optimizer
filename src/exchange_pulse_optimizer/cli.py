@@ -6,20 +6,29 @@ from pathlib import Path
 import time
 from typing import Sequence
 
-from .costs import DEFAULT_GATE_FIDELITIES, ONE_QUBIT_GATES
-from .cpsat_optimizer import CpSatPulseOptimizer
+from .costs import (
+    DEFAULT_CZSWAP_FIDELITY,
+    DEFAULT_CZSWAP_PULSE_COST,
+    DEFAULT_GATE_FIDELITIES,
+    ONE_QUBIT_GATES,
+)
 from .large_heuristic import LargeHeuristicOptimizer
 from .layout import interaction_weighted_layout
 from .optimizer import PulseCountOptimizer
 from .qasm import read_openqasm, transpile_to_supported_gates
 from .topology import read_topology_json
-from .windowed_cpsat import WindowedCpSatOptimizer
 from .worker_config import (
     available_cpu_count,
     load_worker_config,
     parse_worker_setting,
     resolve_worker_count,
 )
+
+# Kept as module attributes so tests and callers can inject implementations.
+# The native OR-Tools dependency is imported only for a selected CP-SAT mode,
+# allowing heuristic-only CLI use on systems where that DLL is unavailable.
+CpSatPulseOptimizer = None
+WindowedCpSatOptimizer = None
 
 
 def _worker_setting(value: str) -> int | str:
@@ -50,10 +59,34 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--cx-cost", type=int, default=28)
     parser.add_argument("--cxswap-cost", type=int, default=31)
     parser.add_argument("--cz-cost", type=int, default=26)
+    parser.add_argument(
+        "--czswap-cost",
+        type=int,
+        default=DEFAULT_CZSWAP_PULSE_COST,
+        help="CZSWAP macro cost used by CP-SAT and large-heuristic modes.",
+    )
     parser.add_argument("--swap-cost", type=int, default=15)
+    parser.add_argument(
+        "--measure-cost",
+        type=int,
+        default=0,
+        help="Measurement macro cost.",
+    )
+    parser.add_argument(
+        "--reset-cost",
+        type=int,
+        default=0,
+        help="Reset macro cost.",
+    )
     parser.add_argument("--cx-fidelity", type=float, default=DEFAULT_GATE_FIDELITIES["cx"])
     parser.add_argument("--cxswap-fidelity", type=float, default=DEFAULT_GATE_FIDELITIES["cxswap"])
     parser.add_argument("--cz-fidelity", type=float, default=DEFAULT_GATE_FIDELITIES["cz"])
+    parser.add_argument(
+        "--czswap-fidelity",
+        type=float,
+        default=DEFAULT_CZSWAP_FIDELITY,
+        help="CZSWAP fidelity used by CP-SAT and large-heuristic modes.",
+    )
     parser.add_argument("--swap-fidelity", type=float, default=DEFAULT_GATE_FIDELITIES["swap"])
     parser.add_argument("--oneq-fidelity", type=float, default=DEFAULT_GATE_FIDELITIES["h"])
     parser.add_argument("--max-layouts", type=int, default=40320)
@@ -96,6 +129,17 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--large-path-candidates", type=int, default=3, help="Number of shortest path candidates used by large-heuristic.")
     parser.add_argument("--large-layout-local-search-rounds", type=int, default=0, help="Pair-swap local-search rounds for large-heuristic initial layout.")
     parser.add_argument("--no-large-cxswap", action="store_true", help="Disable automatic CXSWAP selection in large-heuristic mode.")
+    parser.add_argument(
+        "--large-czswap",
+        action="store_true",
+        help="Enable automatic CZSWAP selection for CZ gates in large-heuristic mode.",
+    )
+    parser.add_argument(
+        "--large-fusion-objective",
+        choices=("distance", "weighted"),
+        default="distance",
+        help="Automatic CXSWAP/CZSWAP policy used by large-heuristic mode.",
+    )
     parser.add_argument("--plot-topology", help="Save a PNG/SVG/PDF image of the physical dot graph")
     parser.add_argument("--no-encoded-edges", action="store_true", help="Do not draw dashed encoded-slot adjacency edges")
     parser.add_argument(
@@ -124,6 +168,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         and args.solver not in {"cp-sat", "window-cp-sat"}
     ):
         parser.error("--cp-sat-workers is valid only for CP-SAT solver modes.")
+    if args.large_czswap and args.solver != "large-heuristic":
+        parser.error("--large-czswap is valid only for large-heuristic mode.")
     try:
         worker_config = load_worker_config(args.config)
         requested_workers = (
@@ -155,16 +201,25 @@ def main(argv: Sequence[str] | None = None) -> None:
         "cx": args.cx_cost,
         "cxswap": args.cxswap_cost,
         "cz": args.cz_cost,
+        "czswap": args.czswap_cost,
         "swap": args.swap_cost,
+        "measure": args.measure_cost,
+        "reset": args.reset_cost,
     }
     gate_fidelities = {
         "cx": args.cx_fidelity,
         "cxswap": args.cxswap_fidelity,
         "cz": args.cz_fidelity,
+        "czswap": args.czswap_fidelity,
         "swap": args.swap_fidelity,
         **{gate: args.oneq_fidelity for gate in ONE_QUBIT_GATES},
     }
     if args.solver == "cp-sat":
+        optimizer_class = CpSatPulseOptimizer
+        if optimizer_class is None:
+            from .cpsat_optimizer import (
+                CpSatPulseOptimizer as optimizer_class,
+            )
         fixed_initial_layout = None
         if args.layout_strategy == "interaction":
             fixed_initial_layout = interaction_weighted_layout(
@@ -173,7 +228,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 decay=args.layout_decay,
                 local_search_rounds=args.layout_local_search_rounds,
             )
-        optimizer = CpSatPulseOptimizer(
+        optimizer = optimizer_class(
             topology,
             pulse_costs=pulse_costs,
             gate_fidelities=gate_fidelities,
@@ -187,7 +242,12 @@ def main(argv: Sequence[str] | None = None) -> None:
             num_search_workers=resolved_workers,
         )
     elif args.solver == "window-cp-sat":
-        optimizer = WindowedCpSatOptimizer(
+        optimizer_class = WindowedCpSatOptimizer
+        if optimizer_class is None:
+            from .windowed_cpsat import (
+                WindowedCpSatOptimizer as optimizer_class,
+            )
+        optimizer = optimizer_class(
             topology,
             pulse_costs=pulse_costs,
             gate_fidelities=gate_fidelities,
@@ -214,6 +274,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             lookahead_gates=args.large_lookahead_gates,
             path_candidates=args.large_path_candidates,
             use_cxswap=not args.no_large_cxswap,
+            use_czswap=args.large_czswap,
+            fusion_objective=args.large_fusion_objective,
             workers=resolved_workers,
         )
     else:
@@ -238,6 +300,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             {
                 "initial_layout": plan.initial_layout,
                 "final_layout": plan.final_layout,
+                "initial_slot_layout": plan.initial_slot_layout,
+                "final_slot_layout": plan.final_slot_layout,
                 "pulse_count": plan.pulse_count,
                 "schedule_duration": plan.schedule_duration,
                 "estimated_fidelity": plan.estimated_fidelity,
@@ -256,6 +320,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                         "dot_groups": step.dot_groups,
                         "pulse_count": step.pulse_count,
                         "layer": step.layer,
+                        "source_gate_index": step.source_gate_index,
+                        "source_label": step.source_label,
                     }
                     for step in sorted_steps
                 ],
@@ -272,7 +338,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             f"{index:02d}: layer={step.layer!s:>3s} {step.name:12s} "
             f"logical={step.logical_qubits} "
             f"dots={step.dot_groups} "
-            f"pulses={step.pulse_count}"
+            f"pulses={step.pulse_count} "
+            f"source={step.source_gate_index}"
         )
     lines.append("== result ==")
     lines.append(f"total_pulses = {plan.pulse_count}")
@@ -289,6 +356,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         f"(requested={requested_workers}, available={available_workers})"
     )
     lines.append(f"final_layout = {plan.final_layout}")
+    if plan.final_slot_layout is not None:
+        lines.append(f"final_slot_layout = {plan.final_slot_layout}")
     if plan.solver_status is not None:
         lines.append(f"solver_status = {plan.solver_status}")
 

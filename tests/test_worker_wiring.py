@@ -100,3 +100,86 @@ def test_cli_worker_argument_overrides_selected_mode_config(
     output = json.loads(capsys.readouterr().out)
     assert _StubOptimizer.calls[-1]["workers"] == 5
     assert output["workers"]["requested"] == 5
+
+
+def test_cli_wires_large_czswap_settings(
+    monkeypatch,
+    capsys,
+) -> None:
+    _StubOptimizer.calls = []
+    monkeypatch.setattr(cli, "LargeHeuristicOptimizer", _StubOptimizer)
+    monkeypatch.setattr(cli, "read_openqasm", lambda _path: object())
+    monkeypatch.setattr(cli, "read_topology_json", lambda _path: object())
+    monkeypatch.setattr(cli, "available_cpu_count", lambda: 8)
+
+    cli.main(
+        [
+            "input.qasm",
+            "topology.json",
+            "--solver",
+            "large-heuristic",
+            "--large-czswap",
+            "--large-fusion-objective",
+            "weighted",
+            "--czswap-cost",
+            "47",
+            "--czswap-fidelity",
+            "0.91",
+            "--measure-cost",
+            "9",
+            "--reset-cost",
+            "6",
+            "--no-qiskit-transpile",
+            "--json",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    kwargs = _StubOptimizer.calls[-1]
+    assert kwargs["use_czswap"] is True
+    assert kwargs["fusion_objective"] == "weighted"
+    assert kwargs["pulse_costs"]["czswap"] == 47
+    assert kwargs["pulse_costs"]["measure"] == 9
+    assert kwargs["pulse_costs"]["reset"] == 6
+    assert kwargs["gate_fidelities"]["czswap"] == 0.91
+    assert output["solver_status"] == "TEST"
+
+
+@pytest.mark.parametrize(
+    ("solver", "optimizer_name"),
+    [
+        ("cp-sat", "CpSatPulseOptimizer"),
+        ("window-cp-sat", "WindowedCpSatOptimizer"),
+    ],
+)
+def test_cli_wires_czswap_settings_to_cp_sat_modes(
+    monkeypatch,
+    capsys,
+    solver: str,
+    optimizer_name: str,
+) -> None:
+    _StubOptimizer.calls = []
+    monkeypatch.setattr(cli, optimizer_name, _StubOptimizer)
+    monkeypatch.setattr(cli, "read_openqasm", lambda _path: object())
+    monkeypatch.setattr(cli, "read_topology_json", lambda _path: object())
+    monkeypatch.setattr(cli, "available_cpu_count", lambda: 8)
+
+    cli.main(
+        [
+            "input.qasm",
+            "topology.json",
+            "--solver",
+            solver,
+            "--czswap-cost",
+            "47",
+            "--czswap-fidelity",
+            "0.91",
+            "--no-qiskit-transpile",
+            "--json",
+        ]
+    )
+
+    _ = json.loads(capsys.readouterr().out)
+    kwargs = _StubOptimizer.calls[-1]
+    assert kwargs["pulse_costs"]["czswap"] == 47
+    assert kwargs["gate_fidelities"]["czswap"] == 0.91

@@ -28,17 +28,25 @@ logical q[2] = dots (6, 7, 8)
 cx     : 28
 cxswap : 31
 cz     : 26
+czswap : 41
 swap   : 15
 h/x    : 3
 rz/z   : 1
-measure : 0
+measure/reset : 0
 ```
 
-`cx=28`, `cxswap=31`, `cz=26`, `swap=15` はmacro-levelの近似値です。2量子ビットゲートのコストは、Chadwick et al., "Short two-qubit pulse sequences for exchange-only spin qubits in 2D layouts" (arXiv:2412.14918) のexchange-only pulse sequence結果を参照しています。CLIオプションで変更できます。
+`cx=28`, `cxswap=31`, `cz=26`, `swap=15` はmacro-levelの近似値です。2量子ビットゲートのコストは、Chadwick et al., "Short two-qubit pulse sequences for exchange-only spin qubits in 2D layouts" (arXiv:2412.14918) のexchange-only pulse sequence結果を参照しています。校正済みのfused CZSWAP値はないため、large-heuristicでは保守的に逐次合成 `czswap=cz+swap=41` をデフォルトにします。CLIオプションで変更できます。
+
+CZSWAPのデフォルト忠実度も、独立な逐次合成として
+`F(czswap)=F(cz)F(swap)=0.9589×0.9903=0.94959867` としています。
+これは校正済みfused gateの推定値ではなく、ユーザー指定値で上書きできます。
 
 ## Qiskitによる入力ゲート変換
 
 OpenQASM入力は、最適化の前にQiskitの `transpile` でこのツールが実行可能なゲート集合へ変換します。これにより、`u`, `u3`, `ccx` などの入力ゲートは、原則として `cx`, `cz`, `swap`, `h`, `x`, `y`, `z`, `s`, `sdg`, `t`, `tdg`, `rx`, `ry`, `rz` に分解されます。
+
+large-heuristicでは、非unitaryな `measure`、`reset` とschedule境界の
+`barrier` を保持します。
 
 このQiskit変換は通常の実行ではデフォルトで有効です。`--qiskit-optimization-level` は、Qiskitにどの程度回路を簡約させるかを指定するオプションです。
 
@@ -265,6 +273,42 @@ CP-SAT関連:
   新しい実行では --workers を推奨します。
 ```
 
+large-heuristic関連:
+
+```text
+--large-front-layer-size N
+  各routing stepで評価するready 2量子ビットゲート数です。
+  デフォルト: 24
+
+--large-lookahead-gates N
+  routing SWAP候補の評価に使うglobalな将来2量子ビットゲート数です。
+  CXSWAP/CZSWAP自動選択では、この値とは別に、参加する各qubitに触れる
+  将来2量子ビットゲートを各32件まで調べます。
+  デフォルト: 32
+
+--large-path-candidates N
+  各2量子ビットpairで調べる最短経路候補数です。
+  デフォルト: 3
+
+--large-layout-local-search-rounds N
+  large-heuristic初期配置のpair-swap局所探索回数です。
+  デフォルト: 0
+
+--no-large-cxswap
+  入力CXに対するCXSWAP自動選択を無効化します。
+
+--large-czswap
+  入力CZに対するCZSWAP自動選択を有効化します。
+  既存結果を変えないため、デフォルトでは無効です。
+
+--large-fusion-objective distance|weighted
+  CXSWAP/CZSWAP自動選択の目的関数を選びます。
+  `distance` は従来の距離優先policyです。
+  `weighted` は融合operationの設定costを課し、将来距離改善を
+  設定SWAP cost単位で評価します。
+  デフォルト: distance
+```
+
 初期配置heuristic関連:
 
 ```text
@@ -309,8 +353,36 @@ macro pulse cost:
 --cz-cost N
   cz のmacro pulse costです。デフォルト: 26
 
+--czswap-cost N
+  large-heuristicで使うczswapのmacro pulse costです。デフォルト: 41
+
 --swap-cost N
   encoded swap / input swap のmacro pulse costです。デフォルト: 15
+
+--measure-cost N
+  measurementのmacro duration/costです。デフォルト: 0
+
+--reset-cost N
+  resetのmacro duration/costです。デフォルト: 0
+```
+
+gate fidelity:
+
+```text
+--cx-fidelity F
+  cx の忠実度です。デフォルト: 0.9755
+
+--cxswap-fidelity F
+  cxswap の忠実度です。デフォルト: 0.9738
+
+--cz-fidelity F
+  cz の忠実度です。デフォルト: 0.9589
+
+--czswap-fidelity F
+  large-heuristicで使うczswapの忠実度です。デフォルト: 0.94959867
+
+--swap-fidelity F
+  encoded swap / input swap の忠実度です。デフォルト: 0.9903
 ```
 
 出力・描画:
@@ -330,6 +402,56 @@ macro pulse cost:
 --no-encoded-edges
   topology図でencoded-slot間の破線edgeを描かないようにします。
 ```
+
+## Large-heuristicモード
+
+`--solver large-heuristic` は、front-layer、lookahead、複数の最短経路候補を使い、
+encoded-SWAP、CXSWAP、optional CZSWAPを比較する大規模回路向けheuristicです。
+最後にmacro operationをgreedyに並列layerへ詰めます。このlayeringは、各論理qubit
+および各物理encoded slotについて、出力されたoperationの先行順序を保持します。
+
+routing SWAP候補は設定可能なglobal lookaheadで評価します。一方、
+CXSWAP/CZSWAP自動選択では、参加する各qubitに触れる未完了の将来2量子ビットゲートを
+各32件まで別に調べます。このため、同じtokenの次の利用までに多数の無関係gateがあっても
+その利用を見落としません。
+
+デフォルトの `fusion_objective="distance"` は従来の距離優先policyを維持します。
+融合候補の二次cost scoreを元のCX/CZ costと同値に正規化するため、per-token将来距離が
+厳密に改善すれば融合し、同距離tieではcost profileによらずdirect gateを維持します。
+
+cost-awareなproactive routingには `fusion_objective="weighted"` を使います。
+隣接direct/fused候補を同じ設定macro cost単位で比較します。
+
+```text
+fusion_score =
+    operation_cost
+    + swap_cost * per_token_future_distance_score
+```
+
+将来距離scoreにはrouterと同じ `0.98^offset` decayを使います。したがって
+direct cost=1、fused cost=2なら、融合の追加cost=1を実際に課します。そのcostを
+回収できない小さな距離改善ではdirectを維持し、累積改善が十分なら融合します。
+厳密なscore tieではdirectを選びます。どちらのpolicyでも出力planのpulse数には、
+設定された実際のCXSWAP/CZSWAP costを使用します。
+
+Python APIでは `LargeHeuristicOptimizer` に
+`initial_layout={logical_qubit: slot, ...}` を渡すと、相互作用重み付き初期配置を
+使わず、指定配置からroutingを開始できます。全回路qubitをちょうど1回ずつ、
+有効かつ重複しないslotへ割り当てる必要があります。余ったtopology slotは未使用でも
+構いません。連続routingでは、`PulsePlan.final_slot_layout` を次のoptimizerの
+`initial_layout` へそのまま渡せます。既存の `initial_layout` と `final_layout` は
+従来どおりdot-group表現です。
+
+large-heuristicの各 `PulseStep` は、元の `QuantumCircuit.data` の厳密な位置を示す
+`source_gate_index` と、Qiskit instructionの `source_label` を保持します。
+direct/fused gate、measurement、reset、入力logical swap、barrierには自身のsource indexを、
+挿入routing SWAPにはrouting epochを代表する決定的なfront先頭gate indexを付けます。
+wrapperはsource indexをcycle/tick metadataへjoinして正確に集計できます。
+
+measurementとresetはmappingを変えない1-token operationで、macro costを設定できます。
+barrierは0-cost trace stepとして出力されます。greedy schedulingではbarrierがglobal layer
+floorを進めるため、barrierは全先行operationより後、全後続operationはbarrierより後の
+layerに置かれます。各tick内でもlogical/physical resourceの先行順序を維持します。
 
 ## CP-SATモード
 
@@ -381,6 +503,14 @@ minimize
 + swap_weight * encoded_swap_count
 + error_weight * total_error_cost
 ```
+
+CP-SATは入力CX/CZを、それぞれ配置更新を伴うCXSWAP/CZSWAPとして
+実行する候補も同じモデル内で比較します。全2量子ビットmacroを同一costとし、
+単独routing SWAP数だけを最小化する場合は
+`CX=CZ=SWAP=CXSWAP=CZSWAP=1`、
+`--makespan-weight 0 --swap-weight 1 --error-weight 0`を使用します。
+これは選択したwindow/horizon内の厳密目的であり、window分割した回路全体の
+大域最適性を証明するものではありません。
 
 実行内容は次の通りです。
 

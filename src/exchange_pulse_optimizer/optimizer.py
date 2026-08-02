@@ -24,6 +24,8 @@ class PulseStep:
     dot_groups: tuple[tuple[Any, ...], ...]
     pulse_count: int
     layer: int | None = None
+    source_gate_index: int | None = None
+    source_label: str | None = None
 
 
 @dataclass
@@ -32,6 +34,8 @@ class PulsePlan:
     final_layout: dict[int, tuple[Any, ...]]
     pulse_count: int
     steps: list[PulseStep] = field(default_factory=list)
+    initial_slot_layout: dict[int, int] | None = None
+    final_slot_layout: dict[int, int] | None = None
     solver_status: str | None = None
     schedule_duration: int | None = None
     estimated_fidelity: float | None = None
